@@ -407,7 +407,7 @@ fn attribution_aggregate(
                     return Ok(None);
                 };
                 let mass = tree.store().node(root)?.mass();
-                let visitor = AttributionVisitor::new(point.to_vec(), mass)?;
+                let visitor = AttributionVisitor::new(point, mass)?;
                 Ok(Some(tree.traverse(point, visitor)?))
             })
             .try_fold(

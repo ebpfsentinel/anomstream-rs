@@ -35,7 +35,7 @@ fn score(tree: &RandomCutTree, point: &[f64]) -> f64 {
 }
 
 fn attribute(tree: &RandomCutTree, point: &[f64]) -> rcf_rs::DiVector {
-    let visitor = AttributionVisitor::new(point.to_vec(), root_mass(tree)).expect("visitor builds");
+    let visitor = AttributionVisitor::new(point, root_mass(tree)).expect("visitor builds");
     tree.traverse(point, visitor).expect("traverse succeeds")
 }
 

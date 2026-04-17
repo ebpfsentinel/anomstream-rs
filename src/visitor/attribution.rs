@@ -21,33 +21,34 @@ use crate::visitor::scoring::{damp, normalizer, score_seen, score_unseen};
 /// Construction validates the queried `point` (rejects `NaN` / `±∞`)
 /// and pre-allocates a [`DiVector`] of matching dimensionality.
 #[derive(Debug, Clone)]
-pub struct AttributionVisitor {
+pub struct AttributionVisitor<'a> {
     /// Per-dimension `(high, low)` accumulator.
     di: DiVector,
-    /// Queried point, kept so we can decide which side of each
-    /// internal bounding box it lies on.
-    point: Vec<f64>,
+    /// Queried point — borrowed for the visitor's lifetime so the
+    /// forest layer can build a fresh visitor per tree without
+    /// cloning the point coordinates each time.
+    point: &'a [f64],
     /// Tree-wide leaf-mass total used for damping and normalisation.
     total_mass: u64,
 }
 
-impl AttributionVisitor {
-    /// Build a fresh attribution visitor for the queried `point`.
+impl<'a> AttributionVisitor<'a> {
+    /// Build a fresh attribution visitor that borrows `point` for
+    /// the duration of one traversal.
     ///
     /// # Errors
     ///
     /// - [`RcfError::NaNValue`] when `point` contains a non-finite component.
     /// - [`RcfError::InvalidConfig`] when `point.is_empty()`.
-    pub fn new(point: Vec<f64>, total_mass: u64) -> RcfResult<Self> {
+    pub fn new(point: &'a [f64], total_mass: u64) -> RcfResult<Self> {
         if point.is_empty() {
             return Err(RcfError::InvalidConfig(
                 "AttributionVisitor: point must not be empty".into(),
             ));
         }
-        ensure_finite(&point)?;
-        let dim = point.len();
+        ensure_finite(point)?;
         Ok(Self {
-            di: DiVector::zeros(dim),
+            di: DiVector::zeros(point.len()),
             point,
             total_mass,
         })
@@ -68,7 +69,7 @@ impl AttributionVisitor {
     }
 }
 
-impl Visitor for AttributionVisitor {
+impl Visitor for AttributionVisitor<'_> {
     type Output = DiVector;
 
     fn accept_internal(
@@ -142,28 +143,29 @@ mod tests {
 
     #[test]
     fn new_rejects_empty_point() {
-        let err = AttributionVisitor::new(vec![], 4).unwrap_err();
+        let empty: &[f64] = &[];
+        let err = AttributionVisitor::new(empty, 4).unwrap_err();
         assert!(matches!(err, RcfError::InvalidConfig(_)));
     }
 
     #[test]
     fn new_rejects_non_finite() {
         assert!(matches!(
-            AttributionVisitor::new(vec![1.0, f64::NAN], 4).unwrap_err(),
+            AttributionVisitor::new(&[1.0, f64::NAN], 4).unwrap_err(),
             RcfError::NaNValue
         ));
     }
 
     #[test]
     fn fresh_visitor_starts_zeroed() {
-        let v = AttributionVisitor::new(vec![1.0, 2.0, 3.0], 4).unwrap();
+        let v = AttributionVisitor::new(&[1.0, 2.0, 3.0], 4).unwrap();
         assert_eq!(v.current().total(), 0.0);
         assert_eq!(v.total_mass(), 4);
     }
 
     #[test]
     fn zero_prob_cut_contributes_nothing() {
-        let mut v = AttributionVisitor::new(vec![0.5, 0.5], 4).unwrap();
+        let mut v = AttributionVisitor::new(&[0.5, 0.5], 4).unwrap();
         v.accept_internal(1, 2, &Cut::new(0, 0.5), &unit_bbox_2d(), 0.0, &[0.0, 0.0]);
         assert_eq!(v.current().total(), 0.0);
     }
@@ -171,7 +173,7 @@ mod tests {
     #[test]
     fn point_above_bbox_routes_to_high() {
         // Point above bbox on dim 0 only.
-        let mut v = AttributionVisitor::new(vec![100.0, 0.5], 8).unwrap();
+        let mut v = AttributionVisitor::new(&[100.0, 0.5], 8).unwrap();
         let bbox = unit_bbox_2d();
         // Synthesise prob_cut + per_dim_prob: all of the cut
         // probability concentrated on dim 0.
@@ -185,7 +187,7 @@ mod tests {
 
     #[test]
     fn point_below_bbox_routes_to_low() {
-        let mut v = AttributionVisitor::new(vec![0.5, -100.0], 8).unwrap();
+        let mut v = AttributionVisitor::new(&[0.5, -100.0], 8).unwrap();
         let bbox = unit_bbox_2d();
         v.accept_internal(1, 2, &Cut::new(1, 0.5), &bbox, 0.5, &[0.0, 0.5]);
         let cur = v.current();
@@ -198,7 +200,7 @@ mod tests {
     #[test]
     fn argmax_identifies_anomalous_dim() {
         // Point anomalous on dim 2 (above bbox), normal otherwise.
-        let mut v = AttributionVisitor::new(vec![0.5, 0.5, 100.0, 0.5], 16).unwrap();
+        let mut v = AttributionVisitor::new(&[0.5, 0.5, 100.0, 0.5], 16).unwrap();
         let mut bbox = BoundingBox::from_point(&[0.0; 4]).unwrap();
         bbox.extend(&[1.0; 4]).unwrap();
         v.accept_internal(2, 8, &Cut::new(2, 0.5), &bbox, 0.6, &[0.0, 0.0, 0.6, 0.0]);
@@ -208,7 +210,7 @@ mod tests {
 
     #[test]
     fn result_scales_by_normalizer() {
-        let mut v = AttributionVisitor::new(vec![100.0, 0.5], 4).unwrap();
+        let mut v = AttributionVisitor::new(&[100.0, 0.5], 4).unwrap();
         let bbox = unit_bbox_2d();
         v.accept_internal(1, 2, &Cut::new(0, 0.5), &bbox, 0.5, &[0.5, 0.0]);
         let raw_high0 = v.current().high()[0];
@@ -222,7 +224,7 @@ mod tests {
         // Point inside bbox on every dim → no attribution even with
         // a non-zero prob_cut (which itself wouldn't happen in
         // practice but the visitor must stay defensive).
-        let mut v = AttributionVisitor::new(vec![0.5, 0.5], 8).unwrap();
+        let mut v = AttributionVisitor::new(&[0.5, 0.5], 8).unwrap();
         let bbox = unit_bbox_2d();
         v.accept_internal(1, 2, &Cut::new(0, 0.5), &bbox, 0.4, &[0.2, 0.2]);
         assert_eq!(v.current().total(), 0.0);
