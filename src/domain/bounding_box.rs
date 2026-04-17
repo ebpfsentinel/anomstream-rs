@@ -221,6 +221,34 @@ impl BoundingBox {
     pub fn per_dim_cut_probabilities(&self, point: &[f64]) -> RcfResult<Vec<f64>> {
         Ok(self.probability_of_cut(point)?.1)
     }
+
+    /// Total cut probability without allocating the per-dim breakdown
+    /// — fast path for [`crate::ScalarScoreVisitor`] which only needs
+    /// the scalar.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RcfError::DimensionMismatch`] when `point.len() != self.dim()`.
+    pub fn total_probability_of_cut(&self, point: &[f64]) -> RcfResult<f64> {
+        ensure_dim(point, self.dim())?;
+        let range_sum = self.range_sum();
+        let mut extension_sum = 0.0_f64;
+        for ((&p, &min), &max) in point.iter().zip(self.min.iter()).zip(self.max.iter()) {
+            let above = p - max;
+            let below = min - p;
+            if above > 0.0 {
+                extension_sum += above;
+            }
+            if below > 0.0 {
+                extension_sum += below;
+            }
+        }
+        let denom = range_sum + extension_sum;
+        if denom == 0.0 {
+            return Ok(0.0);
+        }
+        Ok(extension_sum / denom)
+    }
 }
 
 #[cfg(test)]

@@ -173,21 +173,23 @@ impl RandomCutForest {
             rng,
             ..
         } = self;
-        let new_point: Vec<f64> = point_store
-            .point(new_idx)
-            .expect("just-added point must be present")
-            .to_vec();
 
         for (tree, sampler) in trees.iter_mut() {
             match sampler.accept(new_idx, rng) {
                 SamplerOp::Inserted => {
-                    tree.add(new_idx, &new_point, point_store, rng)?;
+                    let p = point_store
+                        .point(new_idx)
+                        .expect("just-added point must be present");
+                    tree.add(new_idx, p, point_store, rng)?;
                     point_store.incr_ref(new_idx)?;
                 }
                 SamplerOp::Replaced(evicted_idx) => {
                     tree.delete(evicted_idx, point_store)?;
                     point_store.decr_ref(evicted_idx)?;
-                    tree.add(new_idx, &new_point, point_store, rng)?;
+                    let p = point_store
+                        .point(new_idx)
+                        .expect("just-added point must be present");
+                    tree.add(new_idx, p, point_store, rng)?;
                     point_store.incr_ref(new_idx)?;
                 }
                 SamplerOp::Rejected => {}

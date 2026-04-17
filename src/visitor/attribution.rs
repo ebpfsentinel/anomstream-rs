@@ -112,6 +112,10 @@ impl Visitor for AttributionVisitor {
         // No per-dimension cut at the leaf — nothing to attribute.
     }
 
+    fn needs_per_dim_prob(&self) -> bool {
+        true
+    }
+
     fn result(self) -> DiVector {
         let norm = normalizer(self.total_mass);
         let mut di = self.di;

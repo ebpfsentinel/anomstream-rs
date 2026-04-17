@@ -66,16 +66,6 @@ Out of scope for v0.1.0:
 - Shingling for 1D time series (consumer can pre-shingle the input)
 - AWS `eval_metrics` (accuracy / precision-recall) — caller owns labels
 
-## Memory and throughput
-
-Targets for the default configuration (100 trees × 256 samples × 16 dims):
-
-- Memory ≤ 4 MB
-- Insert throughput ≥ 100k points/sec on a typical x86_64 dev box
-- Score throughput ≥ 50k points/sec on the same box
-
-Bench numbers will be published with the v0.1.0 release.
-
 ## Cargo features
 
 | Feature | Default | Effect |

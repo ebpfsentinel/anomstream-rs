@@ -62,4 +62,16 @@ pub trait Visitor {
 
     /// Consume the visitor and return the accumulated output.
     fn result(self) -> Self::Output;
+
+    /// Whether this visitor consumes the `per_dim_prob` argument
+    /// passed to [`accept_internal`](Self::accept_internal). The
+    /// tree traversal skips the per-dimension probability vector
+    /// allocation when this returns `false` (default).
+    ///
+    /// Override to `true` for attribution-style visitors so the
+    /// traversal computes the full per-dim breakdown.
+    #[must_use]
+    fn needs_per_dim_prob(&self) -> bool {
+        false
+    }
 }

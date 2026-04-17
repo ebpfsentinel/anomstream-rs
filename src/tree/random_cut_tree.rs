@@ -19,6 +19,7 @@
 //! in story RCF.7) hand a [`PointAccessor`] in for any operation that
 //! needs to know a leaf's location.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use rand::RngCore;
@@ -197,7 +198,10 @@ impl RandomCutTree {
         P: PointAccessor + ?Sized,
     {
         let n_bbox = self.bbox_of(n, points)?;
-        let mut augmented = n_bbox.clone();
+        // `augmented` is a fresh owned bbox — clone the borrowed
+        // cached one (single allocation per recursion level instead
+        // of two when bbox_of also returned an owned clone).
+        let mut augmented: BoundingBox = (*n_bbox).clone();
         augmented.extend(point)?;
 
         if augmented.range_sum() <= 0.0 {
@@ -206,8 +210,12 @@ impl RandomCutTree {
         }
 
         let cut = Cut::random_cut(&augmented, rng)?;
+        let isolates = isolates_point(&cut, point, &n_bbox);
+        // Drop the borrow on `self` held by `n_bbox` before any
+        // mutating helper runs.
+        drop(n_bbox);
 
-        if isolates_point(&cut, point, &n_bbox) {
+        if isolates {
             self.splice_new_internal(n, point_idx, point, cut, augmented)
         } else {
             self.descend_or_split(n, point_idx, point, points, rng)
@@ -354,18 +362,26 @@ impl RandomCutTree {
     }
 
     /// Walk from `start` up to the root incrementing mass and
-    /// extending each cached internal bounding box by `point`.
+    /// extending each cached internal bounding box by `point` —
+    /// in-place extend via [`NodeStore::node_mut`] avoids the
+    /// `bbox.clone() + set_internal_bbox` round trip on every level.
     fn update_ancestors_after_insert(&mut self, start: NodeRef, point: &[f64]) -> RcfResult<()> {
         let mut cur = Some(start);
         while let Some(node) = cur {
-            let cur_mass = self.store.node(node)?.mass();
-            self.store.set_mass(node, cur_mass + 1)?;
-            if node.is_internal() {
-                let mut bb = self.store.internal_bbox(node)?.clone();
-                bb.extend(point)?;
-                self.store.set_internal_bbox(node, bb)?;
-            }
-            cur = self.store.parent(node)?;
+            let parent = match self.store.node_mut(node)? {
+                Node::Internal {
+                    bbox, mass, parent, ..
+                } => {
+                    *mass += 1;
+                    bbox.extend(point)?;
+                    *parent
+                }
+                Node::Leaf { mass, parent, .. } => {
+                    *mass += 1;
+                    *parent
+                }
+            };
+            cur = parent;
         }
         Ok(())
     }
@@ -501,20 +517,22 @@ impl RandomCutTree {
         lb.merged(&rb)
     }
 
-    /// Borrow or build the bounding box of any node (internal: cached,
-    /// leaf: built on the fly from the point store entry).
-    fn bbox_of<P>(&self, n: NodeRef, points: &P) -> RcfResult<BoundingBox>
+    /// Borrow or build the bounding box of any node (internal: cached
+    /// — borrowed via [`Cow::Borrowed`] to skip an allocation; leaf:
+    /// built on the fly from the point store entry as
+    /// [`Cow::Owned`]).
+    fn bbox_of<'a, P>(&'a self, n: NodeRef, points: &'a P) -> RcfResult<Cow<'a, BoundingBox>>
     where
         P: PointAccessor + ?Sized,
     {
         match self.store.node(n)? {
-            Node::Internal { bbox, .. } => Ok(bbox.clone()),
+            Node::Internal { bbox, .. } => Ok(Cow::Borrowed(bbox)),
             Node::Leaf { point_idx, .. } => {
                 let p = points.point(*point_idx).ok_or(RcfError::OutOfBounds {
                     index: *point_idx,
                     len: 0,
                 })?;
-                BoundingBox::from_point(p)
+                Ok(Cow::Owned(BoundingBox::from_point(p)?))
             }
         }
     }
@@ -561,8 +579,13 @@ impl RandomCutTree {
                 right,
                 ..
             } => {
-                let (prob, per_dim) = bbox.probability_of_cut(point)?;
-                visitor.accept_internal(depth, *mass, cut, bbox, prob, &per_dim);
+                if visitor.needs_per_dim_prob() {
+                    let (prob, per_dim) = bbox.probability_of_cut(point)?;
+                    visitor.accept_internal(depth, *mass, cut, bbox, prob, &per_dim);
+                } else {
+                    let prob = bbox.total_probability_of_cut(point)?;
+                    visitor.accept_internal(depth, *mass, cut, bbox, prob, &[]);
+                }
                 let next = if cut.left_of(point) { *left } else { *right };
                 self.traverse_inner(next, point, depth + 1, visitor)
             }
