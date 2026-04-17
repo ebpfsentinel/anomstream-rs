@@ -93,14 +93,18 @@
 #![warn(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
 
+pub mod config;
 pub mod domain;
 pub mod error;
+pub mod forest;
 pub mod sampler;
 pub mod tree;
 pub mod visitor;
 
+pub use config::{ForestBuilder, RcfConfig};
 pub use domain::{AnomalyScore, BoundingBox, Cut, DiVector, Point};
 pub use error::{RcfError, RcfResult};
+pub use forest::{PointStore, RandomCutForest};
 pub use sampler::{ReservoirSampler, SamplerOp};
 pub use tree::{Node, NodeRef, NodeStore, PointAccessor, RandomCutTree};
 pub use visitor::{AttributionVisitor, ScalarScoreVisitor, Visitor};
