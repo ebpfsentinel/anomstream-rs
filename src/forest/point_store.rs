@@ -10,23 +10,61 @@
 //! The store implements [`PointAccessor`] so trees borrow leaf
 //! points through it during traversal and bbox recomputation.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use crate::domain::point::{ensure_dim, ensure_finite};
 use crate::error::{RcfError, RcfResult};
 use crate::tree::PointAccessor;
 
 /// Refcounted ring buffer of points indexed by `point_idx`.
+///
+/// Reference counts are stored as [`AtomicU32`] so the per-tree work
+/// inside [`crate::RandomCutForest::update`] can call
+/// [`incr_ref`](Self::incr_ref) / [`decr_ref`](Self::decr_ref) in
+/// parallel without coarse locking. Slot allocation
+/// ([`add`](Self::add)) and final freeing
+/// ([`set_free`](Self::set_free) /
+/// [`drop_unreferenced`](Self::drop_unreferenced)) stay
+/// single-threaded — the forest serialises them before/after the
+/// parallel block.
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PointStore {
     /// Per-slot point payload. `None` slots are free.
     points: Vec<Option<Vec<f64>>>,
     /// Per-slot reference count (number of trees currently holding
-    /// the point at that slot).
-    ref_counts: Vec<u32>,
+    /// the point at that slot). Atomic so parallel update workers
+    /// can adjust it without locking.
+    #[cfg_attr(feature = "serde", serde(with = "atomic_u32_vec_serde"))]
+    ref_counts: Vec<AtomicU32>,
     /// LIFO stack of free slot indices.
     free_list: Vec<usize>,
     /// Per-point dimensionality enforced at insertion.
     dimension: usize,
+}
+
+#[cfg(feature = "serde")]
+mod atomic_u32_vec_serde {
+    //! Serde adapter that snapshots a `Vec<AtomicU32>` to / from a
+    //! `Vec<u32>` payload using `Ordering::Relaxed` (consistent with
+    //! the runtime's intended ordering for refcount loads).
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    /// Snapshot a `&[AtomicU32]` to a `Vec<u32>` payload.
+    pub fn serialize<S: Serializer>(v: &[AtomicU32], serializer: S) -> Result<S::Ok, S::Error> {
+        let snapshot: Vec<u32> = v.iter().map(|a| a.load(Ordering::Relaxed)).collect();
+        snapshot.serialize(serializer)
+    }
+
+    /// Reconstitute a `Vec<AtomicU32>` from a `Vec<u32>` payload.
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<AtomicU32>, D::Error> {
+        let raw = Vec::<u32>::deserialize(deserializer)?;
+        Ok(raw.into_iter().map(AtomicU32::new).collect())
+    }
 }
 
 impl PointStore {
@@ -82,12 +120,12 @@ impl PointStore {
         ensure_finite(&point)?;
         if let Some(idx) = self.free_list.pop() {
             self.points[idx] = Some(point);
-            self.ref_counts[idx] = 0;
+            self.ref_counts[idx].store(0, Ordering::Relaxed);
             return Ok(idx);
         }
         let idx = self.points.len();
         self.points.push(Some(point));
-        self.ref_counts.push(0);
+        self.ref_counts.push(AtomicU32::new(0));
         Ok(idx)
     }
 
@@ -108,10 +146,10 @@ impl PointStore {
                 len: self.points.len(),
             });
         }
-        if self.ref_counts[idx] != 0 {
+        let rc = self.ref_counts[idx].load(Ordering::Acquire);
+        if rc != 0 {
             return Err(RcfError::InvalidConfig(format!(
-                "PointStore::drop_unreferenced: slot {idx} still has refcount {}",
-                self.ref_counts[idx]
+                "PointStore::drop_unreferenced: slot {idx} still has refcount {rc}"
             )));
         }
         self.points[idx] = None;
@@ -119,61 +157,98 @@ impl PointStore {
         Ok(())
     }
 
-    /// Increment the reference count for slot `idx`.
+    /// Increment the reference count for slot `idx`. Lock-free
+    /// atomic op — safe to call from parallel workers via `&self`.
     ///
     /// # Errors
     ///
     /// Returns [`RcfError::OutOfBounds`] when `idx` is invalid or
     /// the slot is free.
-    pub fn incr_ref(&mut self, idx: usize) -> RcfResult<()> {
+    pub fn incr_ref(&self, idx: usize) -> RcfResult<()> {
         if idx >= self.points.len() || self.points[idx].is_none() {
             return Err(RcfError::OutOfBounds {
                 index: idx,
                 len: self.points.len(),
             });
         }
-        self.ref_counts[idx] = self.ref_counts[idx].saturating_add(1);
+        self.ref_counts[idx].fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
-    /// Decrement the reference count for slot `idx`. When the count
-    /// reaches zero the slot is freed and reused on the next
-    /// [`add`](Self::add).
+    /// Decrement the reference count for slot `idx`. Returns `true`
+    /// when the count just hit zero — the caller (forest layer) must
+    /// then invoke [`set_free`](Self::set_free) **single-threaded**
+    /// to actually mark the slot as reclaimable. Lock-free atomic op
+    /// — safe from parallel workers via `&self`.
     ///
     /// # Errors
     ///
     /// - [`RcfError::OutOfBounds`] when `idx` is invalid or the
     ///   slot is free.
     /// - [`RcfError::InvalidConfig`] when the count is already zero
-    ///   (under-decrement).
-    pub fn decr_ref(&mut self, idx: usize) -> RcfResult<()> {
+    ///   (under-decrement detected via the atomic CAS loop).
+    pub fn decr_ref(&self, idx: usize) -> RcfResult<bool> {
         if idx >= self.points.len() || self.points[idx].is_none() {
             return Err(RcfError::OutOfBounds {
                 index: idx,
                 len: self.points.len(),
             });
         }
-        if self.ref_counts[idx] == 0 {
+        // CAS loop avoids underflow in the rare race where two
+        // decrements happen at zero (would only occur on a misuse).
+        loop {
+            let current = self.ref_counts[idx].load(Ordering::Acquire);
+            if current == 0 {
+                return Err(RcfError::InvalidConfig(format!(
+                    "PointStore::decr_ref: slot {idx} already at zero refcount"
+                )));
+            }
+            let next = current - 1;
+            if self.ref_counts[idx]
+                .compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Ok(next == 0);
+            }
+        }
+    }
+
+    /// Mark `idx` as free after [`decr_ref`](Self::decr_ref) returned
+    /// `true`. Single-threaded — called from the forest layer outside
+    /// the parallel block.
+    ///
+    /// # Errors
+    ///
+    /// - [`RcfError::OutOfBounds`] when `idx` is invalid or the slot
+    ///   is already free.
+    /// - [`RcfError::InvalidConfig`] when the slot's refcount is
+    ///   non-zero (something incr'd between the decr and the free).
+    pub fn set_free(&mut self, idx: usize) -> RcfResult<()> {
+        if idx >= self.points.len() || self.points[idx].is_none() {
+            return Err(RcfError::OutOfBounds {
+                index: idx,
+                len: self.points.len(),
+            });
+        }
+        let rc = self.ref_counts[idx].load(Ordering::Acquire);
+        if rc != 0 {
             return Err(RcfError::InvalidConfig(format!(
-                "PointStore::decr_ref: slot {idx} already at zero refcount"
+                "PointStore::set_free: slot {idx} has refcount {rc}, not zero"
             )));
         }
-        self.ref_counts[idx] -= 1;
-        if self.ref_counts[idx] == 0 {
-            self.points[idx] = None;
-            self.free_list.push(idx);
-        }
+        self.points[idx] = None;
+        self.free_list.push(idx);
         Ok(())
     }
 
     /// Current reference count for slot `idx`. Returns `0` for free
-    /// or invalid slots.
+    /// or invalid slots. Loads the atomic with `Ordering::Acquire`.
     #[must_use]
     pub fn ref_count(&self, idx: usize) -> u32 {
         if idx >= self.ref_counts.len() {
             return 0;
         }
-        self.ref_counts[idx]
+        self.ref_counts[idx].load(Ordering::Acquire)
     }
 
     /// Pessimistic upper bound (in bytes) of the store's payload.
@@ -243,7 +318,9 @@ mod tests {
         assert_eq!(s.point(99), None);
         let idx = s.add(vec![0.0, 0.0]).unwrap();
         s.incr_ref(idx).unwrap();
-        s.decr_ref(idx).unwrap();
+        let hit_zero = s.decr_ref(idx).unwrap();
+        assert!(hit_zero);
+        s.set_free(idx).unwrap();
         assert_eq!(s.point(idx), None);
     }
 
@@ -261,11 +338,14 @@ mod tests {
         s.incr_ref(a).unwrap();
         s.incr_ref(a).unwrap();
         assert_eq!(s.ref_count(a), 2);
-        s.decr_ref(a).unwrap();
+        let hit_zero = s.decr_ref(a).unwrap();
+        assert!(!hit_zero);
         assert_eq!(s.ref_count(a), 1);
-        s.decr_ref(a).unwrap();
+        let hit_zero = s.decr_ref(a).unwrap();
+        assert!(hit_zero);
         assert_eq!(s.ref_count(a), 0);
-        // Slot freed and reused.
+        // Slot must be explicitly freed before reuse.
+        s.set_free(a).unwrap();
         let b = s.add(vec![2.0, 2.0]).unwrap();
         assert_eq!(b, a);
     }
@@ -279,7 +359,8 @@ mod tests {
         ));
         let idx = s.add(vec![0.0, 0.0]).unwrap();
         s.incr_ref(idx).unwrap();
-        s.decr_ref(idx).unwrap();
+        assert!(s.decr_ref(idx).unwrap());
+        s.set_free(idx).unwrap();
         assert!(matches!(
             s.incr_ref(idx).unwrap_err(),
             RcfError::OutOfBounds { .. }
@@ -326,11 +407,13 @@ mod tests {
         let b = s.add(vec![1.0, 1.0]).unwrap();
         assert_eq!(s.live_count(), 2);
         s.incr_ref(a).unwrap();
-        s.decr_ref(a).unwrap();
+        assert!(s.decr_ref(a).unwrap());
+        s.set_free(a).unwrap();
         assert_eq!(s.live_count(), 1);
         // Bump and drop b to confirm decr brings live_count back to 0.
         s.incr_ref(b).unwrap();
-        s.decr_ref(b).unwrap();
+        assert!(s.decr_ref(b).unwrap());
+        s.set_free(b).unwrap();
         assert_eq!(s.live_count(), 0);
     }
 

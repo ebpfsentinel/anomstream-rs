@@ -12,7 +12,7 @@
 //! `traverse` with a fresh visitor and average the per-tree outputs
 //! — matching the AWS spec ("average across trees").
 
-use rand::SeedableRng;
+use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use crate::config::RcfConfig;
@@ -24,18 +24,25 @@ use crate::sampler::{ReservoirSampler, SamplerOp};
 use crate::tree::{PointAccessor, RandomCutTree};
 use crate::visitor::{AttributionVisitor, ScalarScoreVisitor};
 
+/// Per-tree state: tree + sampler + dedicated RNG. The dedicated
+/// RNG is what unlocks parallel insertion under the `parallel`
+/// feature — every tree advances its own deterministic stream,
+/// seeded once at construction from the master forest seed.
+type TreeSlot = (RandomCutTree, ReservoirSampler, ChaCha8Rng);
+
 /// Random Cut Forest aggregate.
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RandomCutForest {
     /// Validated configuration.
     config: RcfConfig,
-    /// `(tree, sampler)` pairs — one entry per tree.
-    trees: Vec<(RandomCutTree, ReservoirSampler)>,
+    /// Per-tree state: `(tree, sampler, rng)` triples — one entry per
+    /// tree. Each tree owns a dedicated `ChaCha8Rng` seeded from the
+    /// master forest seed at construction so parallel insert paths
+    /// never share RNG state.
+    trees: Vec<TreeSlot>,
     /// Refcounted store shared across every tree.
     point_store: PointStore,
-    /// Forest-wide RNG used by both samplers and tree cuts.
-    rng: ChaCha8Rng,
     /// Total number of `update` calls observed.
     updates_seen: u64,
 }
@@ -50,7 +57,8 @@ impl RandomCutForest {
     /// Propagates failures from the underlying tree, sampler and
     /// point-store constructors.
     pub fn from_config(config: RcfConfig) -> RcfResult<Self> {
-        let rng = if let Some(seed) = config.seed {
+        // Master RNG only used to seed per-tree RNGs deterministically.
+        let mut master = if let Some(seed) = config.seed {
             ChaCha8Rng::seed_from_u64(seed)
         } else {
             let mut bytes = [0_u8; 8];
@@ -62,7 +70,7 @@ impl RandomCutForest {
             ChaCha8Rng::seed_from_u64(u64::from_le_bytes(bytes))
         };
 
-        let mut trees = Vec::with_capacity(config.num_trees);
+        let mut trees: Vec<TreeSlot> = Vec::with_capacity(config.num_trees);
         for _ in 0..config.num_trees {
             let tree = RandomCutTree::new(
                 u32::try_from(config.sample_size).map_err(|_| {
@@ -74,7 +82,10 @@ impl RandomCutForest {
                 config.dimension,
             )?;
             let sampler = ReservoirSampler::new(config.sample_size, config.time_decay)?;
-            trees.push((tree, sampler));
+            // Derive a deterministic per-tree seed from the master so
+            // parallel insert paths never alias RNG state.
+            let tree_rng = ChaCha8Rng::seed_from_u64(master.next_u64());
+            trees.push((tree, sampler, tree_rng));
         }
 
         let point_store = PointStore::new(config.dimension)?;
@@ -83,7 +94,6 @@ impl RandomCutForest {
             config,
             trees,
             point_store,
-            rng,
             updates_seen: 0,
         })
     }
@@ -125,22 +135,24 @@ impl RandomCutForest {
         &self.point_store
     }
 
-    /// Borrow the per-tree `(tree, sampler)` pairs. Used by tests
-    /// and persistence.
+    /// Borrow the per-tree `(tree, sampler, rng)` triples. Used by
+    /// tests and persistence.
     #[must_use]
-    pub fn trees(&self) -> &[(RandomCutTree, ReservoirSampler)] {
+    pub fn trees(&self) -> &[TreeSlot] {
         &self.trees
     }
 
     /// Pessimistic memory upper bound (in bytes) of the forest's
     /// payload: point store + per-tree node arenas + per-tree sampler
-    /// heaps.
+    /// heaps + per-tree RNG state.
     #[must_use]
     pub fn memory_estimate(&self) -> usize {
         let mut total = self.point_store.memory_estimate();
-        for (_, sampler) in &self.trees {
+        for (_, sampler, _) in &self.trees {
             // BinaryHeap<WeightedEntry> ≈ capacity × 16 bytes.
             total += sampler.capacity() * 16;
+            // ChaCha8Rng state ≈ 256 bytes per tree.
+            total += core::mem::size_of::<ChaCha8Rng>();
         }
         // NodeStore per tree: 2 × sample_size slots × ~48 bytes (worst case).
         total += self.trees.len() * (2 * self.config.sample_size * 48);
@@ -168,35 +180,22 @@ impl RandomCutForest {
         let new_idx = self.point_store.add(point)?;
 
         let Self {
-            trees,
-            point_store,
-            rng,
-            ..
+            trees, point_store, ..
         } = self;
+        let store: &PointStore = point_store;
 
-        for (tree, sampler) in trees.iter_mut() {
-            match sampler.accept(new_idx, rng) {
-                SamplerOp::Inserted => {
-                    let p = point_store
-                        .point(new_idx)
-                        .expect("just-added point must be present");
-                    tree.add(new_idx, p, point_store, rng)?;
-                    point_store.incr_ref(new_idx)?;
-                }
-                SamplerOp::Replaced(evicted_idx) => {
-                    tree.delete(evicted_idx, point_store)?;
-                    point_store.decr_ref(evicted_idx)?;
-                    let p = point_store
-                        .point(new_idx)
-                        .expect("just-added point must be present");
-                    tree.add(new_idx, p, point_store, rng)?;
-                    point_store.incr_ref(new_idx)?;
-                }
-                SamplerOp::Rejected => {}
-            }
+        // Per-tree work: returns the evicted_idx that hit zero on
+        // decr_ref (if any) so the caller can finalise the slot
+        // outside the parallel block.
+        let pending_frees = update_trees(trees, store, new_idx)?;
+
+        // Single-threaded post-process: turn `decr_ref` "hit-zero"
+        // signals into actual slot-free operations.
+        for evicted in pending_frees {
+            point_store.set_free(evicted)?;
         }
 
-        // No tree wanted the point — release the slot we eagerly
+        // No tree wanted the new point — release the slot we eagerly
         // reserved so capacity stays bounded.
         if point_store.ref_count(new_idx) == 0 {
             point_store.drop_unreferenced(new_idx)?;
@@ -253,18 +252,101 @@ impl RandomCutForest {
     }
 }
 
+/// Per-tree insert work — returns the list of evicted point indices
+/// whose refcount just hit zero so the caller can finalise the slot
+/// freeing single-threaded after the (possibly parallel) block.
+///
+/// Serial when the `parallel` feature is off; rayon `par_chunks_mut`
+/// when enabled. The point store is borrowed immutably from the
+/// closures — refcount mutations are atomic, slot mutations happen
+/// only through `&mut PointStore` outside the parallel block.
+fn update_trees(
+    trees: &mut [TreeSlot],
+    store: &PointStore,
+    new_idx: usize,
+) -> RcfResult<Vec<usize>> {
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::prelude::*;
+        // Per-tree work is short (~hundreds of ns) at the default
+        // config — chunk trees so each rayon task does enough work
+        // to amortise the work-stealing dispatch overhead. Chunk size
+        // tuned on default 100×256×16 where ~25 trees per task hits
+        // the sweet spot on a 4-core box.
+        let chunk_size = trees.len().div_ceil(rayon::current_num_threads()).max(1);
+        let chunks: RcfResult<Vec<Vec<usize>>> = trees
+            .par_chunks_mut(chunk_size)
+            .map(|chunk| -> RcfResult<Vec<usize>> {
+                let mut local = Vec::new();
+                for slot in chunk {
+                    let mut freed = process_tree_update(slot, store, new_idx)?;
+                    local.append(&mut freed);
+                }
+                Ok(local)
+            })
+            .collect();
+        let mut flat = Vec::new();
+        for c in chunks? {
+            flat.extend(c);
+        }
+        Ok(flat)
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    {
+        let mut out = Vec::new();
+        for slot in trees.iter_mut() {
+            let mut local = process_tree_update(slot, store, new_idx)?;
+            out.append(&mut local);
+        }
+        Ok(out)
+    }
+}
+
+/// Single-tree branch of [`update_trees`]: feeds the new index to
+/// the sampler, applies the resulting `Inserted` / `Replaced` /
+/// `Rejected` op to the tree + refcounts. Returns the evicted index
+/// when [`PointStore::decr_ref`] reports it just hit zero.
+fn process_tree_update(
+    slot: &mut TreeSlot,
+    store: &PointStore,
+    new_idx: usize,
+) -> RcfResult<Vec<usize>> {
+    let (tree, sampler, rng) = slot;
+    let mut freed = Vec::new();
+    match sampler.accept(new_idx, rng) {
+        SamplerOp::Inserted => {
+            let p = store
+                .point(new_idx)
+                .expect("just-added point must be present");
+            tree.add(new_idx, p, store, rng)?;
+            store.incr_ref(new_idx)?;
+        }
+        SamplerOp::Replaced(evicted) => {
+            tree.delete(evicted, store)?;
+            if store.decr_ref(evicted)? {
+                freed.push(evicted);
+            }
+            let p = store
+                .point(new_idx)
+                .expect("just-added point must be present");
+            tree.add(new_idx, p, store, rng)?;
+            store.incr_ref(new_idx)?;
+        }
+        SamplerOp::Rejected => {}
+    }
+    Ok(freed)
+}
+
 /// Score aggregation across trees. Serial fold or rayon parallel
 /// fold/reduce depending on the `parallel` cargo feature.
-fn score_aggregate(
-    trees: &[(RandomCutTree, ReservoirSampler)],
-    point: &[f64],
-) -> RcfResult<(f64, usize)> {
+fn score_aggregate(trees: &[TreeSlot], point: &[f64]) -> RcfResult<(f64, usize)> {
     #[cfg(feature = "parallel")]
     {
         use rayon::prelude::*;
         trees
             .par_iter()
-            .map(|(tree, _)| -> RcfResult<Option<f64>> {
+            .map(|(tree, _, _)| -> RcfResult<Option<f64>> {
                 let Some(root) = tree.root() else {
                     return Ok(None);
                 };
@@ -293,7 +375,7 @@ fn score_aggregate(
     {
         let mut total = 0.0_f64;
         let mut count = 0_usize;
-        for (tree, _) in trees {
+        for (tree, _, _) in trees {
             let Some(root) = tree.root() else {
                 continue;
             };
@@ -311,7 +393,7 @@ fn score_aggregate(
 /// rayon parallel fold/reduce depending on the `parallel` cargo
 /// feature.
 fn attribution_aggregate(
-    trees: &[(RandomCutTree, ReservoirSampler)],
+    trees: &[TreeSlot],
     dimension: usize,
     point: &[f64],
 ) -> RcfResult<(DiVector, usize)> {
@@ -320,7 +402,7 @@ fn attribution_aggregate(
         use rayon::prelude::*;
         trees
             .par_iter()
-            .map(|(tree, _)| -> RcfResult<Option<DiVector>> {
+            .map(|(tree, _, _)| -> RcfResult<Option<DiVector>> {
                 let Some(root) = tree.root() else {
                     return Ok(None);
                 };
@@ -352,7 +434,7 @@ fn attribution_aggregate(
     {
         let mut accumulator = DiVector::zeros(dimension);
         let mut count = 0_usize;
-        for (tree, _) in trees {
+        for (tree, _, _) in trees {
             let Some(root) = tree.root() else {
                 continue;
             };
@@ -425,7 +507,7 @@ mod tests {
         let mut f = small_forest();
         f.update(vec![0.0, 0.0]).unwrap();
         // Every tree's reservoir under-capacity → all Inserted.
-        for (tree, sampler) in f.trees() {
+        for (tree, sampler, _) in f.trees() {
             assert!(tree.root().is_some());
             assert_eq!(sampler.len(), 1);
         }
@@ -440,7 +522,7 @@ mod tests {
             let v = i as f64;
             f.update(vec![v, v + 1.0]).unwrap();
         }
-        for (tree, sampler) in f.trees() {
+        for (tree, sampler, _) in f.trees() {
             assert!(sampler.len() <= sampler.capacity());
             assert!(tree.distinct_point_count() <= sampler.capacity());
         }
