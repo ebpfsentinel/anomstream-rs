@@ -31,6 +31,25 @@ use crate::visitor::{AttributionVisitor, ScalarScoreVisitor};
 type TreeSlot<const D: usize> = (RandomCutTree<D>, ReservoirSampler, ChaCha8Rng);
 
 /// Random Cut Forest aggregate over `D`-dimensional points.
+///
+/// # Examples
+///
+/// ```
+/// use rcf_rs::ForestBuilder;
+///
+/// let mut forest = ForestBuilder::<2>::new()
+///     .num_trees(50)
+///     .sample_size(16)
+///     .seed(2026)
+///     .build()
+///     .unwrap();
+/// for i in 0..32 {
+///     let v = f64::from(i) * 0.01;
+///     forest.update([v, v + 0.5]).unwrap();
+/// }
+/// let score: f64 = forest.score(&[10.0, 10.0]).unwrap().into();
+/// assert!(score >= 0.0);
+/// ```
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RandomCutForest<const D: usize> {

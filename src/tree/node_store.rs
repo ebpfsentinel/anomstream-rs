@@ -20,6 +20,17 @@ use crate::tree::node::{Node, NodeRef};
 
 /// Flat-array storage for [`Node`]s with `O(1)` allocation and
 /// deallocation via per-arena free lists.
+///
+/// # Examples
+///
+/// ```
+/// use rcf_rs::NodeStore;
+///
+/// let mut store = NodeStore::<2>::new(4).unwrap();
+/// let leaf = store.add_leaf(0, None, 1).unwrap();
+/// assert!(leaf.is_leaf());
+/// assert_eq!(store.live_count(), 1);
+/// ```
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NodeStore<const D: usize> {

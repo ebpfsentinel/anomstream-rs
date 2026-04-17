@@ -16,6 +16,22 @@ use crate::domain::{BoundingBox, Cut};
 /// storage in [`NodeStore`].
 ///
 /// [`NodeStore`]: crate::tree::NodeStore
+///
+/// # Examples
+///
+/// ```
+/// use rcf_rs::ForestBuilder;
+///
+/// let forest = ForestBuilder::<2>::new()
+///     .num_trees(50)
+///     .sample_size(8)
+///     .seed(1)
+///     .build()
+///     .unwrap();
+/// for (tree, _, _) in forest.trees() {
+///     assert!(tree.root().is_none()); // empty forest has no root yet
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NodeRef(u32);
@@ -85,8 +101,22 @@ impl NodeRef {
 }
 
 /// A live tree node — either an internal node holding a cut, bounding
-/// box and two children, or a leaf pointing into the future point
-/// store (story RCF.7).
+/// box and two children, or a leaf pointing into the forest's point
+/// store.
+///
+/// # Examples
+///
+/// ```
+/// use rcf_rs::Node;
+///
+/// let leaf: Node<2> = Node::Leaf {
+///     point_idx: 0,
+///     parent: None,
+///     mass: 1,
+/// };
+/// assert!(leaf.is_leaf());
+/// assert_eq!(leaf.mass(), 1);
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 // `Internal` is intentionally larger than `Leaf` — embedding the

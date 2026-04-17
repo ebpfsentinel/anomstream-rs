@@ -36,6 +36,16 @@ use crate::visitor::Visitor;
 /// reference is a fixed-size array rather than a slice — callers can
 /// always pass it to [`BoundingBox::from_point`] without paying for a
 /// runtime length check.
+///
+/// # Examples
+///
+/// ```
+/// use rcf_rs::tree::PointAccessor;
+///
+/// let v: Vec<[f64; 2]> = vec![[1.0, 2.0]];
+/// let p: &[f64; 2] = <Vec<[f64; 2]> as PointAccessor<2>>::point(&v, 0).unwrap();
+/// assert_eq!(p, &[1.0, 2.0]);
+/// ```
 pub trait PointAccessor<const D: usize> {
     /// Borrow the point stored at `idx`, or return `None` when it
     /// does not exist.
@@ -56,6 +66,21 @@ impl<const D: usize> PointAccessor<D> for [[f64; D]] {
 
 /// Incrementally-maintained random cut tree over up to `capacity`
 /// distinct `D`-dimensional points.
+///
+/// # Examples
+///
+/// ```
+/// use rand::SeedableRng;
+/// use rand_chacha::ChaCha8Rng;
+/// use rcf_rs::RandomCutTree;
+///
+/// let mut tree = RandomCutTree::<2>::new(8).unwrap();
+/// let p = [1.0_f64, 2.0];
+/// let points = vec![p];
+/// let mut rng = ChaCha8Rng::seed_from_u64(42);
+/// tree.add(0, &p, &points, &mut rng).unwrap();
+/// assert!(tree.root().unwrap().is_leaf());
+/// ```
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RandomCutTree<const D: usize> {

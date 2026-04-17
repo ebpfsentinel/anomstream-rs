@@ -20,8 +20,18 @@ use crate::visitor::scoring::{damp, normalizer, score_seen, score_unseen};
 /// Visitor that produces a non-negative scalar [`AnomalyScore`].
 ///
 /// `total_mass` is the number of points the *whole tree* holds (the
-/// root's mass) — the future `RandomCutForest` (story RCF.7) reads
-/// it from its trees and forwards it to every per-tree visitor.
+/// root's mass) — the [`crate::RandomCutForest`] reads it from its
+/// trees and forwards it to every per-tree visitor.
+///
+/// # Examples
+///
+/// ```
+/// use rcf_rs::ScalarScoreVisitor;
+///
+/// let v = ScalarScoreVisitor::new(64);
+/// assert_eq!(v.accumulated(), 0.0);
+/// assert_eq!(v.total_mass(), 64);
+/// ```
 #[derive(Debug, Clone)]
 pub struct ScalarScoreVisitor {
     /// Sum of per-depth dampened contributions.

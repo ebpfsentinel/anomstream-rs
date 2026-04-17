@@ -35,6 +35,21 @@ use rand::{Rng, RngCore};
 use crate::error::{RcfError, RcfResult};
 
 /// Outcome of a single [`ReservoirSampler::accept`] call.
+///
+/// # Examples
+///
+/// ```
+/// use rcf_rs::SamplerOp;
+///
+/// fn handle(op: SamplerOp) -> Option<usize> {
+///     match op {
+///         SamplerOp::Inserted | SamplerOp::Rejected => None,
+///         SamplerOp::Replaced(evicted) => Some(evicted),
+///     }
+/// }
+/// assert_eq!(handle(SamplerOp::Replaced(7)), Some(7));
+/// assert_eq!(handle(SamplerOp::Inserted), None);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SamplerOp {
     /// The candidate was inserted into a free slot of the reservoir.
@@ -93,6 +108,20 @@ impl Ord for WeightedEntry {
 /// The heap holds the `capacity` **smallest** weights seen so far;
 /// the heap top is the largest among those, the candidate to evict
 /// when a smaller-weight item arrives.
+///
+/// # Examples
+///
+/// ```
+/// use rand::SeedableRng;
+/// use rand_chacha::ChaCha8Rng;
+/// use rcf_rs::{ReservoirSampler, SamplerOp};
+///
+/// let mut sampler = ReservoirSampler::new(2, 0.0).unwrap();
+/// let mut rng = ChaCha8Rng::seed_from_u64(42);
+/// assert!(matches!(sampler.accept(0, &mut rng), SamplerOp::Inserted));
+/// assert!(matches!(sampler.accept(1, &mut rng), SamplerOp::Inserted));
+/// assert_eq!(sampler.len(), 2);
+/// ```
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReservoirSampler {

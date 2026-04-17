@@ -34,6 +34,19 @@ pub const DEFAULT_TIME_DECAY: f64 = 0.0;
 
 /// Validated forest hyperparameters (dimension is encoded separately
 /// at the type level).
+///
+/// # Examples
+///
+/// ```
+/// use rcf_rs::{ForestBuilder, RcfConfig};
+///
+/// let builder = ForestBuilder::<4>::new()
+///     .num_trees(50)
+///     .sample_size(64);
+/// let cfg: &RcfConfig = builder.config();
+/// assert_eq!(cfg.num_trees, 50);
+/// cfg.validate().unwrap();
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RcfConfig {

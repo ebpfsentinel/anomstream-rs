@@ -29,6 +29,16 @@ use crate::error::{RcfError, RcfResult};
 /// Axis-aligned bounding box for `D`-dimensional points. Storage is
 /// stack-allocated `[f64; D]` so the compiler can unroll the
 /// per-dim loops, vectorise via SIMD, and avoid any heap traffic.
+///
+/// # Examples
+///
+/// ```
+/// use rcf_rs::BoundingBox;
+///
+/// let mut bbox = BoundingBox::<2>::from_point(&[0.0, 0.0]).unwrap();
+/// bbox.extend(&[3.0, 4.0]).unwrap();
+/// assert_eq!(bbox.range_sum(), 7.0);
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BoundingBox<const D: usize> {

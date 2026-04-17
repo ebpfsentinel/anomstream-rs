@@ -11,6 +11,15 @@ use thiserror::Error;
 ///
 /// Variants are stable across `0.x` patch releases — adding a new
 /// variant is a minor-version change.
+///
+/// # Examples
+///
+/// ```
+/// use rcf_rs::{ForestBuilder, RcfError};
+///
+/// let err = ForestBuilder::<4>::new().num_trees(10).build().unwrap_err();
+/// assert!(matches!(err, RcfError::InvalidConfig(_)));
+/// ```
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum RcfError {
@@ -72,6 +81,18 @@ pub enum RcfError {
 }
 
 /// Convenience alias for `Result<T, RcfError>`.
+///
+/// # Examples
+///
+/// ```
+/// use rcf_rs::{RcfError, RcfResult};
+///
+/// fn check(n: u64) -> RcfResult<u64> {
+///     if n == 0 { Err(RcfError::EmptyForest) } else { Ok(n) }
+/// }
+/// assert_eq!(check(7).unwrap(), 7);
+/// assert!(check(0).is_err());
+/// ```
 pub type RcfResult<T> = Result<T, RcfError>;
 
 #[cfg(test)]

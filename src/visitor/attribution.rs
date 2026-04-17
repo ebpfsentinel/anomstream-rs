@@ -20,6 +20,17 @@ use crate::visitor::scoring::{damp, normalizer, score_seen, score_unseen};
 ///
 /// Construction validates the queried `point` (rejects `NaN` / `±∞`)
 /// and pre-allocates a [`DiVector`] of matching dimensionality.
+///
+/// # Examples
+///
+/// ```
+/// use rcf_rs::AttributionVisitor;
+///
+/// let query = [0.5_f64, 0.5, 100.0, 0.5];
+/// let v = AttributionVisitor::new(&query, 16).unwrap();
+/// assert_eq!(v.total_mass(), 16);
+/// assert_eq!(v.current().dim(), 4);
+/// ```
 #[derive(Debug, Clone)]
 pub struct AttributionVisitor<'a> {
     /// Per-dimension `(high, low)` accumulator.

@@ -38,6 +38,15 @@ pub use scalar_score::ScalarScoreVisitor;
 /// - `accept_leaf` is called exactly once, on the leaf where the walk
 ///   stops.
 /// - `result` is called exactly once, after the traversal finishes.
+///
+/// # Examples
+///
+/// ```
+/// use rcf_rs::{ScalarScoreVisitor, Visitor};
+/// // `ScalarScoreVisitor` implements `Visitor<D>` for any `D`.
+/// let v: ScalarScoreVisitor = ScalarScoreVisitor::new(8);
+/// assert_eq!(v.total_mass(), 8);
+/// ```
 pub trait Visitor<const D: usize> {
     /// Output produced after the traversal completes.
     type Output;

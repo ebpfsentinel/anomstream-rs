@@ -31,6 +31,18 @@ use crate::tree::PointAccessor;
 /// [`drop_unreferenced`](Self::drop_unreferenced)) stay
 /// single-threaded — the forest serialises them before/after the
 /// parallel block.
+///
+/// # Examples
+///
+/// ```
+/// use rcf_rs::PointStore;
+///
+/// let mut store = PointStore::<2>::new().unwrap();
+/// let idx = store.add([1.0, 2.0]).unwrap();
+/// assert_eq!(store.live_count(), 1);
+/// store.drop_unreferenced(idx).unwrap();
+/// assert_eq!(store.live_count(), 0);
+/// ```
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PointStore<const D: usize> {
