@@ -1,0 +1,393 @@
+//! Adaptive-threshold wrapper around [`RandomCutForest`].
+//!
+//! [`ThresholdedForest`] composes a [`RandomCutForest`] with an EMA of
+//! the anomaly-score stream ([`EmaStats`]) and derives a continuously
+//! updated threshold:
+//!
+//! ```text
+//! threshold  = max(min_threshold, mean + z_factor · stddev)
+//! is_anomaly = ready && score > threshold
+//! grade      = clamp01( (score − threshold) / (z_factor · stddev) )  if ready
+//!            | 0.0                                                   otherwise
+//! ```
+//!
+//! where `ready` means the detector has seen at least
+//! `min_observations` points *and* the running stddev is strictly
+//! positive. The `ready` flag guards the cold-start period so callers
+//! never see spurious anomaly verdicts on the first few points (the
+//! EMA has not yet converged and the bootstrap variance is exactly
+//! zero).
+//!
+//! # Scoring protocol
+//!
+//! `process(point)` evaluates the point *before* inserting it into
+//! the forest. This avoids a self-referential bias where the freshly
+//! inserted point would be scored against a forest that already
+//! contains it — always shallow, always low-anomaly. The stats EMA
+//! is updated with the pre-insert score so the threshold adapts to
+//! the distribution of scores the forest would assign to unseen
+//! points.
+
+use crate::config::RcfConfig;
+use crate::domain::point::ensure_finite;
+use crate::domain::{AnomalyScore, DiVector};
+use crate::error::{RcfError, RcfResult};
+use crate::forest::RandomCutForest;
+use crate::thresholded::config::ThresholdedConfig;
+use crate::thresholded::grade::AnomalyGrade;
+use crate::thresholded::stats::EmaStats;
+
+/// Adaptive-threshold detector composed of a [`RandomCutForest`] plus
+/// a running EMA of the anomaly-score stream.
+///
+/// Instantiate via [`crate::ThresholdedForestBuilder`]. The type
+/// parameter `D` is the per-point dimensionality, pinned at compile
+/// time exactly like the bare [`RandomCutForest`].
+///
+/// # Examples
+///
+/// ```
+/// use rcf_rs::ThresholdedForestBuilder;
+///
+/// let mut detector = ThresholdedForestBuilder::<2>::new()
+///     .num_trees(50)
+///     .sample_size(64)
+///     .min_observations(4)
+///     .seed(42)
+///     .build()
+///     .unwrap();
+/// for i in 0..64 {
+///     let v = f64::from(i) * 0.01;
+///     let _ = detector.process([v, v + 0.5]).unwrap();
+/// }
+/// let verdict = detector.process([10.0, 10.0]).unwrap();
+/// assert!(verdict.ready());
+/// ```
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ThresholdedForest<const D: usize> {
+    /// Underlying random cut forest.
+    forest: RandomCutForest<D>,
+    /// Threshold-layer configuration.
+    thresholded: ThresholdedConfig,
+    /// Running mean/variance of the per-point anomaly scores.
+    stats: EmaStats,
+}
+
+impl<const D: usize> ThresholdedForest<D> {
+    /// Low-level constructor used by [`crate::ThresholdedForestBuilder::build`].
+    ///
+    /// Both `forest` and `thresholded` are expected to have been
+    /// validated upstream; this function only wires them together and
+    /// constructs the EMA.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`EmaStats::new`] failures (non-finite decay etc.).
+    pub fn from_parts(
+        forest: RandomCutForest<D>,
+        thresholded: ThresholdedConfig,
+    ) -> RcfResult<Self> {
+        thresholded.validate()?;
+        let stats = EmaStats::new(thresholded.score_decay)?;
+        Ok(Self {
+            forest,
+            thresholded,
+            stats,
+        })
+    }
+
+    /// Read-only access to the underlying forest.
+    #[must_use]
+    pub fn forest(&self) -> &RandomCutForest<D> {
+        &self.forest
+    }
+
+    /// Read-only access to the forest configuration.
+    #[must_use]
+    pub fn forest_config(&self) -> &RcfConfig {
+        self.forest.config()
+    }
+
+    /// Threshold-layer configuration.
+    #[must_use]
+    pub fn thresholded_config(&self) -> &ThresholdedConfig {
+        &self.thresholded
+    }
+
+    /// Running statistics of the anomaly-score stream.
+    #[must_use]
+    pub fn stats(&self) -> &EmaStats {
+        &self.stats
+    }
+
+    /// Current adaptive threshold. Clamped to the configured floor
+    /// whenever the detector has not yet accumulated enough
+    /// observations to trust the running stddev.
+    #[must_use]
+    pub fn current_threshold(&self) -> f64 {
+        let ready = self.stats.observations() >= self.thresholded.min_observations
+            && self.stats.stddev() > 0.0;
+        if ready {
+            let adaptive = self.stats.mean() + self.thresholded.z_factor * self.stats.stddev();
+            adaptive.max(self.thresholded.min_threshold)
+        } else {
+            self.thresholded.min_threshold
+        }
+    }
+
+    /// Score `point` against the *current* forest, grade it against
+    /// the adaptive threshold, insert it into the forest, then fold
+    /// the score into the running statistics.
+    ///
+    /// The first call returns a warming-up verdict (`ready = false`,
+    /// `is_anomaly = false`) because the forest holds no leaves yet.
+    /// Subsequent calls within the `min_observations` warmup window
+    /// also return `ready = false`.
+    ///
+    /// # Errors
+    ///
+    /// - [`RcfError::NaNValue`] when the point contains a non-finite
+    ///   component.
+    /// - Any error bubbled up from [`RandomCutForest::update`] or
+    ///   [`RandomCutForest::score`].
+    pub fn process(&mut self, point: [f64; D]) -> RcfResult<AnomalyGrade> {
+        ensure_finite(&point)?;
+
+        // Score against the forest BEFORE the insert — a post-insert
+        // score would bias the result toward "seen" for the freshly
+        // inserted point and distort the threshold-driving statistics.
+        let score = match self.forest.score(&point) {
+            Ok(s) => s,
+            Err(RcfError::EmptyForest) => {
+                // Cold start: no leaves yet. Record the insert,
+                // emit a warming-up verdict, do not update stats.
+                self.forest.update(point)?;
+                return AnomalyGrade::new(
+                    AnomalyScore::new(0.0)?,
+                    self.thresholded.min_threshold,
+                    0.0,
+                    false,
+                    false,
+                );
+            }
+            Err(other) => return Err(other),
+        };
+
+        self.forest.update(point)?;
+
+        let verdict = self.grade_from_score(score)?;
+        self.stats.update(f64::from(score));
+        Ok(verdict)
+    }
+
+    /// Score `point` and grade it without touching the forest or the
+    /// running statistics. Useful for re-evaluating a point against a
+    /// snapshot of the model without contaminating the training
+    /// stream.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`RandomCutForest::score`].
+    pub fn score_only(&self, point: &[f64; D]) -> RcfResult<AnomalyGrade> {
+        let score = self.forest.score(point)?;
+        self.grade_from_score(score)
+    }
+
+    /// Compute the per-feature attribution of `point`'s anomaly score
+    /// against the underlying forest. Forwarded to
+    /// [`RandomCutForest::attribution`]; the threshold layer has no
+    /// bearing on attribution.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`RandomCutForest::attribution`].
+    pub fn attribution(&self, point: &[f64; D]) -> RcfResult<DiVector> {
+        self.forest.attribution(point)
+    }
+
+    /// Drop every statistic and warm-up sample. The underlying forest
+    /// is left untouched — callers who want a full reset should
+    /// rebuild via the builder. Used by tests and by callers that
+    /// want to re-enter a warmup phase after a major regime change.
+    pub fn reset_stats(&mut self) {
+        self.stats.reset();
+    }
+
+    /// Translate a raw anomaly score into a graded verdict using the
+    /// current running statistics.
+    fn grade_from_score(&self, score: AnomalyScore) -> RcfResult<AnomalyGrade> {
+        let stddev = self.stats.stddev();
+        let ready = self.stats.observations() >= self.thresholded.min_observations && stddev > 0.0;
+
+        if !ready {
+            return AnomalyGrade::new(score, self.thresholded.min_threshold, 0.0, false, false);
+        }
+
+        let adaptive = self.stats.mean() + self.thresholded.z_factor * stddev;
+        let threshold = adaptive.max(self.thresholded.min_threshold);
+        let raw = f64::from(score);
+
+        if raw <= threshold {
+            return AnomalyGrade::new(score, threshold, 0.0, false, true);
+        }
+
+        // Grade: linearly scaled between `threshold` (0) and
+        // `threshold + z_factor · stddev` (1). This keeps the grade
+        // interpretable in "sigmas above threshold" units regardless
+        // of the absolute score magnitude.
+        let span = self.thresholded.z_factor * stddev;
+        let grade = if span > 0.0 {
+            ((raw - threshold) / span).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        AnomalyGrade::new(score, threshold, grade, true, true)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)] // Tests assert bounds on closed-form quantities.
+mod tests {
+    use super::*;
+    use crate::thresholded::config::ThresholdedForestBuilder;
+
+    fn detector<const D: usize>(min_obs: u64) -> ThresholdedForest<D> {
+        ThresholdedForestBuilder::<D>::new()
+            .num_trees(50)
+            .sample_size(64)
+            .min_observations(min_obs)
+            .min_threshold(0.0)
+            .seed(42)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn cold_start_emits_warming_up_verdict() {
+        let mut d = detector::<2>(8);
+        let v = d.process([0.1, 0.2]).unwrap();
+        assert!(!v.ready());
+        assert!(!v.is_anomaly());
+        assert_eq!(v.grade(), 0.0);
+    }
+
+    #[test]
+    fn warmup_period_always_not_ready() {
+        let mut d = detector::<2>(32);
+        for i in 0..20 {
+            let v = f64::from(i) * 0.01;
+            let verdict = d.process([v, v + 0.5]).unwrap();
+            assert!(!verdict.ready(), "should still be warming up at i={i}");
+        }
+    }
+
+    #[test]
+    fn becomes_ready_after_min_observations() {
+        let mut d = detector::<2>(8);
+        for i in 0..64 {
+            let v = f64::from(i) * 0.01;
+            d.process([v, v + 0.5]).unwrap();
+        }
+        // Probe an existing-ish point; observations > min_obs and
+        // stddev should be > 0 after 64 updates.
+        let verdict = d.process([0.64, 1.14]).unwrap();
+        assert!(verdict.ready());
+    }
+
+    #[test]
+    fn rejects_non_finite_point() {
+        let mut d = detector::<2>(8);
+        assert!(matches!(
+            d.process([f64::NAN, 0.0]).unwrap_err(),
+            RcfError::NaNValue
+        ));
+    }
+
+    #[test]
+    fn score_only_does_not_mutate_stats() {
+        let mut d = detector::<2>(4);
+        for i in 0..32 {
+            let v = f64::from(i) * 0.01;
+            d.process([v, v + 0.5]).unwrap();
+        }
+        let obs_before = d.stats().observations();
+        let _ = d.score_only(&[10.0, 10.0]).unwrap();
+        assert_eq!(d.stats().observations(), obs_before);
+    }
+
+    #[test]
+    fn outlier_grades_above_cluster_member() {
+        let mut d = detector::<2>(8);
+        for i in 0..128 {
+            let v = f64::from(i) * 0.01;
+            d.process([v, v + 0.5]).unwrap();
+        }
+        let cluster = d.score_only(&[0.3, 0.8]).unwrap();
+        let outlier = d.score_only(&[20.0, 20.0]).unwrap();
+        assert!(f64::from(outlier.score()) > f64::from(cluster.score()));
+    }
+
+    #[test]
+    fn current_threshold_respects_min_floor_during_warmup() {
+        let d = detector::<2>(16);
+        assert_eq!(d.current_threshold(), 0.0);
+    }
+
+    #[test]
+    fn current_threshold_above_floor_when_stddev_positive() {
+        use rand::{Rng, SeedableRng};
+        // Use a non-zero min_threshold and confirm the adaptive
+        // threshold rises above it once stats converge.
+        let mut d = ThresholdedForestBuilder::<2>::new()
+            .num_trees(50)
+            .sample_size(64)
+            .min_observations(8)
+            .min_threshold(0.01)
+            .seed(3)
+            .build()
+            .unwrap();
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(17);
+        for _ in 0..256 {
+            let a: f64 = rng.random();
+            let b: f64 = rng.random();
+            d.process([a, b]).unwrap();
+        }
+        assert!(d.current_threshold() >= 0.01);
+    }
+
+    #[test]
+    fn attribution_forwards_to_forest() {
+        let mut d = detector::<2>(4);
+        for i in 0..32 {
+            let v = f64::from(i) * 0.01;
+            d.process([v, v + 0.5]).unwrap();
+        }
+        let di = d.attribution(&[10.0, 10.0]).unwrap();
+        assert_eq!(di.dim(), 2);
+    }
+
+    #[test]
+    fn reset_stats_sends_detector_back_to_warmup() {
+        let mut d = detector::<2>(4);
+        for i in 0..32 {
+            let v = f64::from(i) * 0.01;
+            d.process([v, v + 0.5]).unwrap();
+        }
+        assert!(d.stats().observations() > 0);
+        d.reset_stats();
+        assert_eq!(d.stats().observations(), 0);
+        // Next verdict should be warming-up again.
+        let v = d.process([0.5, 1.0]).unwrap();
+        assert!(!v.ready());
+    }
+
+    #[test]
+    fn accessors_expose_inner_state() {
+        let d = detector::<4>(8);
+        assert_eq!(d.forest().num_trees(), 50);
+        assert_eq!(d.forest_config().sample_size, 64);
+        assert_eq!(d.thresholded_config().min_observations, 8);
+        assert_eq!(d.stats().observations(), 0);
+    }
+}

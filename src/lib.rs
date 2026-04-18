@@ -37,7 +37,8 @@
 //!
 //! Modules are organised in layered fashion: `domain` (value objects),
 //! `tree` (storage + cut tree), `sampler` (reservoir), `visitor` (scoring
-//! strategies), and `forest` (aggregate root). The `persistence` module is
+//! strategies), `forest` (aggregate root), and `thresholded` (adaptive
+//! threshold layer on top of the forest). The `persistence` module is
 //! gated behind the `serde` feature.
 //!
 //! # Example
@@ -98,6 +99,7 @@ pub mod forest;
 #[cfg(feature = "serde")]
 pub mod persistence;
 pub mod sampler;
+pub mod thresholded;
 pub mod tree;
 pub mod visitor;
 
@@ -106,5 +108,8 @@ pub use domain::{AnomalyScore, BoundingBox, Cut, DiVector, Point};
 pub use error::{RcfError, RcfResult};
 pub use forest::{PointStore, RandomCutForest};
 pub use sampler::{ReservoirSampler, SamplerOp};
+pub use thresholded::{
+    AnomalyGrade, EmaStats, ThresholdedConfig, ThresholdedForest, ThresholdedForestBuilder,
+};
 pub use tree::{Node, NodeRef, NodeStore, PointAccessor, RandomCutTree};
 pub use visitor::{AttributionVisitor, ScalarScoreVisitor, Visitor};
