@@ -231,6 +231,69 @@ impl<const D: usize> ThresholdedForest<D> {
         self.stats.reset();
     }
 
+    /// Retract a previously-observed point from the underlying forest
+    /// by its `point_idx`. Delegates to
+    /// [`RandomCutForest::delete`] — the threshold layer's stats are
+    /// left untouched (they already reflect the score that was
+    /// emitted when the point was processed).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`RandomCutForest::delete`].
+    pub fn delete(&mut self, point_idx: usize) -> RcfResult<bool> {
+        self.forest.delete(point_idx)
+    }
+
+    /// Retract every point whose stored value bit-matches `point`.
+    /// Delegates to [`RandomCutForest::delete_by_value`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`RandomCutForest::delete_by_value`].
+    pub fn delete_by_value(&mut self, point: &[f64; D]) -> RcfResult<usize> {
+        self.forest.delete_by_value(point)
+    }
+
+    /// Same as [`Self::process`] but returns the `point_idx` the
+    /// underlying forest assigned to the fresh observation, paired
+    /// with the usual graded verdict. Callers that want to later
+    /// retract the observation via [`Self::delete`] should store the
+    /// index from this call.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::process`].
+    pub fn process_indexed(
+        &mut self,
+        point: [f64; D],
+    ) -> RcfResult<(usize, AnomalyGrade)> {
+        ensure_finite(&point)?;
+
+        let score = match self.forest.score(&point) {
+            Ok(s) => s,
+            Err(RcfError::EmptyForest) => {
+                // Cold start: bypass the normal scoring path, mirror
+                // `process`'s warming-up verdict, and return the
+                // fresh point_idx from the underlying insert.
+                let idx = self.forest.update_indexed(point)?;
+                let grade = AnomalyGrade::new(
+                    AnomalyScore::new(0.0)?,
+                    self.thresholded.min_threshold,
+                    0.0,
+                    false,
+                    false,
+                )?;
+                return Ok((idx, grade));
+            }
+            Err(other) => return Err(other),
+        };
+
+        let idx = self.forest.update_indexed(point)?;
+        let verdict = self.grade_from_score(score)?;
+        self.stats.update(f64::from(score));
+        Ok((idx, verdict))
+    }
+
     /// Translate a raw anomaly score into a graded verdict using the
     /// current running statistics.
     fn grade_from_score(&self, score: AnomalyScore) -> RcfResult<AnomalyGrade> {

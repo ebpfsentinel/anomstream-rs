@@ -217,7 +217,11 @@ impl<const D: usize> RandomCutForest<D> {
     /// - Any error bubbled up from the per-tree attribution path.
     pub fn attribution_stability(&self, point: &[f64; D]) -> RcfResult<AttributionStability> {
         ensure_finite(point)?;
-        let per_tree = collect_per_tree(self, point)?;
+        // Keep parity with `attribution()` — stored points are in the
+        // forest's scaled space, so the caller query must be scaled
+        // before walking the tree cuts.
+        let scaled = self.scale_point_copy(point);
+        let per_tree = collect_per_tree(self, &scaled)?;
         stability_from_collection::<D>(&per_tree)
     }
 }

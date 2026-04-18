@@ -316,6 +316,37 @@ impl ReservoirSampler {
         self.iter_indices().any(|idx| idx == point_idx)
     }
 
+    /// Remove the entry matching `point_idx`, preserving every other
+    /// entry and the heap invariant. Returns `true` when a matching
+    /// entry was present and evicted, `false` otherwise.
+    ///
+    /// O(capacity) — drains the heap into a transient `Vec`, filters
+    /// out the target, and rebuilds. The reservoir size drops by one
+    /// on success and the `entries_seen` counter is *not* adjusted
+    /// so the time-decay weight trajectory of future inserts is
+    /// unchanged.
+    ///
+    /// Exposed to support explicit deletion flows from the forest
+    /// layer (e.g. SOC-driven false-positive retractions) — the
+    /// natural eviction path via [`Self::accept`] does not let
+    /// callers target a specific index.
+    pub fn remove(&mut self, point_idx: usize) -> bool {
+        let before = self.heap.len();
+        let kept: Vec<WeightedEntry> = self
+            .heap
+            .drain()
+            .filter(|entry| entry.point_idx != point_idx)
+            .collect();
+        let removed = kept.len() < before;
+        // `drain` empties the heap; push every survivor back. Each
+        // `push` is O(log n), so the full rebuild is O(n log n) but
+        // bounded by `capacity ≤ 2048`.
+        for entry in kept {
+            self.heap.push(entry);
+        }
+        removed
+    }
+
     /// Offer `point_idx` to the sampler. Returns the resulting
     /// [`SamplerOp`].
     ///
@@ -703,6 +734,67 @@ mod tests {
         for i in 0..32 {
             assert_eq!(s.accept(i, &mut rng), SamplerOp::Inserted);
         }
+    }
+
+    #[test]
+    fn remove_evicts_matching_entry() {
+        let mut s = ReservoirSampler::new(4, 0.0).unwrap();
+        let mut rng = fresh_rng(7);
+        for i in 10..14 {
+            s.accept(i, &mut rng);
+        }
+        assert_eq!(s.len(), 4);
+        assert!(s.remove(11));
+        assert_eq!(s.len(), 3);
+        assert!(!s.contains(11));
+        assert!(s.contains(10));
+        assert!(s.contains(12));
+        assert!(s.contains(13));
+    }
+
+    #[test]
+    fn remove_missing_is_noop() {
+        let mut s = ReservoirSampler::new(4, 0.0).unwrap();
+        let mut rng = fresh_rng(7);
+        for i in 10..14 {
+            s.accept(i, &mut rng);
+        }
+        assert!(!s.remove(9999));
+        assert_eq!(s.len(), 4);
+    }
+
+    #[test]
+    fn remove_keeps_entries_seen_stable() {
+        let mut s = ReservoirSampler::new(4, 0.1).unwrap();
+        let mut rng = fresh_rng(1);
+        for i in 10..20 {
+            s.accept(i, &mut rng);
+        }
+        let seen_before = s.entries_seen();
+        s.remove(15);
+        assert_eq!(s.entries_seen(), seen_before);
+    }
+
+    #[test]
+    fn remove_preserves_heap_invariant() {
+        let mut s = ReservoirSampler::new(64, 0.01).unwrap();
+        let mut rng = fresh_rng(2026);
+        for i in 0..200 {
+            s.accept(i, &mut rng);
+        }
+        let pivot = s.iter_indices().next().unwrap();
+        assert!(s.remove(pivot));
+        // Force a fresh accept — the sampler should still decide
+        // evictions correctly against the rebuilt heap.
+        let op = s.accept(9999, &mut rng);
+        assert!(matches!(
+            op,
+            SamplerOp::Inserted | SamplerOp::Replaced(_) | SamplerOp::Rejected
+        ));
+        // And no duplicate indices.
+        let idxs: Vec<usize> = s.iter_indices().collect();
+        let unique: HashSet<usize> = idxs.iter().copied().collect();
+        assert_eq!(idxs.len(), unique.len());
     }
 
     #[test]

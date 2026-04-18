@@ -106,6 +106,26 @@ pub struct RcfConfig {
     /// less dominated by the first few stream entries.
     #[cfg_attr(feature = "serde", serde(default = "default_initial_accept_fraction"))]
     pub initial_accept_fraction: f64,
+    /// Optional per-dimension multiplicative weights applied to every
+    /// point before it reaches the forest's hot paths (`update`,
+    /// `score`, `attribution`, `bootstrap`, `delete_by_value`). Length
+    /// must match the forest's compile-time dimension `D`.
+    ///
+    /// Intended for per-feature scale normalisation: when different
+    /// input dimensions have wildly different dynamic ranges
+    /// (packet-rate in `[10², 10⁶]`, protocol-mix ratios in `[0, 1]`,
+    /// entropy in `[0, 8]` bits), a naive random cut weights each
+    /// dimension by its raw range. Pre-scaling with `1 / stddev[d]`
+    /// recovers a unit-variance input space where every dim pulls
+    /// its weight. For full z-score normalisation the caller should
+    /// still mean-centre upstream — `feature_scales` is a weight, not
+    /// a full affine transform.
+    ///
+    /// `None` keeps the classic "forest sees the raw caller point"
+    /// behaviour. The field is `#[serde(default)]` so old snapshots
+    /// deserialise without migration.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub feature_scales: Option<Vec<f64>>,
 }
 
 /// Serde default for [`RcfConfig::initial_accept_fraction`] so payloads
@@ -163,6 +183,35 @@ impl RcfConfig {
                 "initial_accept_fraction {} out of (0.0, 1.0]",
                 self.initial_accept_fraction
             )));
+        }
+        if let Some(scales) = &self.feature_scales {
+            for (i, s) in scales.iter().enumerate() {
+                if !s.is_finite() || *s <= 0.0 {
+                    return Err(RcfError::InvalidConfig(format!(
+                        "feature_scales[{i}] must be finite and > 0, got {s}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate the declared [`RcfConfig::feature_scales`] against a
+    /// target per-point dimension `d`. When `feature_scales` is
+    /// `None`, the check is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RcfError::DimensionMismatch`] when the scales vector
+    /// length does not equal `d`.
+    pub fn validate_feature_scales_dimension(&self, d: usize) -> RcfResult<()> {
+        if let Some(scales) = &self.feature_scales
+            && scales.len() != d
+        {
+            return Err(RcfError::DimensionMismatch {
+                expected: d,
+                got: scales.len(),
+            });
         }
         Ok(())
     }
@@ -239,6 +288,7 @@ impl<const D: usize> ForestBuilder<D> {
                 seed: None,
                 num_threads: None,
                 initial_accept_fraction: DEFAULT_INITIAL_ACCEPT_FRACTION,
+                feature_scales: None,
             },
             time_decay_explicit: false,
         }
@@ -305,6 +355,29 @@ impl<const D: usize> ForestBuilder<D> {
         self
     }
 
+    /// Set per-dimension multiplicative weights applied to every
+    /// point before it reaches the forest's hot paths. See
+    /// [`RcfConfig::feature_scales`] for semantics. Pass the exact
+    /// `[f64; D]` array — length is checked against the builder's
+    /// compile-time `D` at [`Self::build`] time, contents are
+    /// checked for finiteness and positivity by
+    /// [`RcfConfig::validate`].
+    #[must_use]
+    pub fn feature_scales(mut self, scales: [f64; D]) -> Self {
+        self.config.feature_scales = Some(scales.to_vec());
+        self
+    }
+
+    /// Drop any previously-set `feature_scales` — returns the builder
+    /// to the unweighted state. Useful for tests that want to clear a
+    /// shared template's scale vector before building a specialised
+    /// forest.
+    #[must_use]
+    pub fn clear_feature_scales(mut self) -> Self {
+        self.config.feature_scales = None;
+        self
+    }
+
     /// Read-only access to the config under construction.
     #[must_use]
     pub fn config(&self) -> &RcfConfig {
@@ -326,6 +399,7 @@ impl<const D: usize> ForestBuilder<D> {
     pub fn build(self) -> RcfResult<RandomCutForest<D>> {
         RcfConfig::validate_dimension(D)?;
         self.config.validate()?;
+        self.config.validate_feature_scales_dimension(D)?;
         RandomCutForest::<D>::from_config(self.config)
     }
 }
@@ -342,6 +416,7 @@ mod tests {
             seed: None,
             num_threads: None,
             initial_accept_fraction: DEFAULT_INITIAL_ACCEPT_FRACTION,
+            feature_scales: None,
         }
     }
 

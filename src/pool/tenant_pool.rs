@@ -242,6 +242,35 @@ where
         self.touch_or_create(key)?.attribution(point)
     }
 
+    /// Retract a previously-observed point from a tenant's forest by
+    /// its `point_idx`. Returns `Ok(false)` (and does not create the
+    /// tenant) when the tenant is absent — SOC retraction paths must
+    /// not silently spin up fresh detectors.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`ThresholdedForest::delete`] errors.
+    pub fn delete(&mut self, key: &K, point_idx: usize) -> RcfResult<bool> {
+        match self.get_mut(key) {
+            Some(detector) => detector.delete(point_idx),
+            None => Ok(false),
+        }
+    }
+
+    /// Retract every point whose stored value bit-matches `point`
+    /// for a given tenant. Returns `Ok(0)` (and does not create the
+    /// tenant) when the tenant is absent.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`ThresholdedForest::delete_by_value`] errors.
+    pub fn delete_by_value(&mut self, key: &K, point: &[f64; D]) -> RcfResult<usize> {
+        match self.get_mut(key) {
+            Some(detector) => detector.delete_by_value(point),
+            None => Ok(0),
+        }
+    }
+
     /// Replay historical `points` into the tenant's detector before
     /// any live traffic. Lazily instantiates the tenant (like
     /// [`Self::process`]), then delegates to

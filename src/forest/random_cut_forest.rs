@@ -85,6 +85,10 @@ impl<const D: usize> RandomCutForest<D> {
     /// Propagates failures from the underlying tree, sampler and
     /// point-store constructors.
     pub fn from_config(config: RcfConfig) -> RcfResult<Self> {
+        // Belt-and-braces: `ForestBuilder::build` already runs both
+        // checks, but any direct `from_config` caller must also see
+        // a mismatched `feature_scales` length rejected up front.
+        config.validate_feature_scales_dimension(D)?;
         // Master RNG only used to seed per-tree RNGs deterministically.
         let mut master = if let Some(seed) = config.seed {
             ChaCha8Rng::seed_from_u64(seed)
@@ -147,6 +151,31 @@ impl<const D: usize> RandomCutForest<D> {
     #[must_use]
     pub fn config(&self) -> &RcfConfig {
         &self.config
+    }
+
+    /// Apply the configured per-dim multiplicative
+    /// [`RcfConfig::feature_scales`] to `point` and return the scaled
+    /// copy. When no scales are configured, returns `*point`. Exposed
+    /// to the crate so helpers living outside `forest::` (notably
+    /// [`crate::attribution_stability`]) can pre-scale caller
+    /// queries through the same path the forest uses internally.
+    ///
+    /// Silently passes through when the resolved scales length does
+    /// not match `D` — the invariant is enforced at build time, but
+    /// snapshot-loaded forests that bypass validation must still
+    /// behave predictably.
+    #[must_use]
+    pub(crate) fn scale_point_copy(&self, point: &[f64; D]) -> [f64; D] {
+        match &self.config.feature_scales {
+            Some(scales) if scales.len() == D => {
+                let mut out = *point;
+                for (p, s) in out.iter_mut().zip(scales.iter()) {
+                    *p *= s;
+                }
+                out
+            }
+            _ => *point,
+        }
     }
 
     /// Number of trees in the forest.
@@ -216,6 +245,30 @@ impl<const D: usize> RandomCutForest<D> {
     /// is unreachable: [`PointStore::add`] returned the index in the
     /// preceding line, so the slot is guaranteed live.
     pub fn update(&mut self, point: [f64; D]) -> RcfResult<()> {
+        let scaled = self.scale_point_copy(&point);
+        self.insert_point(scaled)?;
+        Ok(())
+    }
+
+    /// Same as [`Self::update`] but returns the `point_idx` assigned
+    /// to the freshly inserted point. Callers that want to later
+    /// retract a specific observation (SOC false-positive
+    /// annotation, scripted unit-test fixtures, …) should track the
+    /// index they receive here and hand it to [`Self::delete`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::update`].
+    pub fn update_indexed(&mut self, point: [f64; D]) -> RcfResult<usize> {
+        let scaled = self.scale_point_copy(&point);
+        self.insert_point(scaled)
+    }
+
+    /// Core insertion body — performs the full `update` pipeline and
+    /// returns the freshly assigned `point_idx`. Shared by
+    /// [`Self::update`] and [`Self::update_indexed`] so the hot-path
+    /// logic lives in exactly one place.
+    fn insert_point(&mut self, point: [f64; D]) -> RcfResult<usize> {
         ensure_finite(&point)?;
 
         let new_idx = self.point_store.add(point)?;
@@ -247,7 +300,85 @@ impl<const D: usize> RandomCutForest<D> {
         }
 
         self.updates_seen = self.updates_seen.saturating_add(1);
-        Ok(())
+        Ok(new_idx)
+    }
+
+    /// Retract a previously inserted point from every tree that
+    /// currently holds it.
+    ///
+    /// Returns `true` when at least one tree's reservoir held
+    /// `point_idx` and the point was evicted. Returns `false` when
+    /// no tree had the point (already evicted by the reservoir, or
+    /// the index was never observed in the first place).
+    ///
+    /// Use this to handle SOC-driven false-positive retractions —
+    /// a window that an analyst marks as benign post-hoc should no
+    /// longer baseline the detector.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`crate::RandomCutTree::delete`] and
+    /// [`PointStore`] failures.
+    pub fn delete(&mut self, point_idx: usize) -> RcfResult<bool> {
+        let Self {
+            trees, point_store, ..
+        } = self;
+        let mut removed_from_any = false;
+        let mut went_to_zero = false;
+        for (tree, sampler, _) in trees.iter_mut() {
+            if sampler.remove(point_idx) {
+                tree.delete(point_idx, &*point_store)?;
+                if point_store.decr_ref(point_idx)? {
+                    went_to_zero = true;
+                }
+                removed_from_any = true;
+            }
+        }
+        if went_to_zero {
+            point_store.set_free(point_idx)?;
+        }
+        Ok(removed_from_any)
+    }
+
+    /// Retract every point whose stored value bit-matches `point`.
+    /// Returns the number of indices actually deleted — zero when no
+    /// reservoir currently holds a matching observation.
+    ///
+    /// The match is strictly bit-for-bit: a point that was stored
+    /// as `0.1_f64 + 0.2_f64` will not match a caller-supplied
+    /// `0.3_f64`. Callers that cannot guarantee identical source
+    /// arithmetic should track the `point_idx` from
+    /// [`Self::update_indexed`] and call [`Self::delete`] directly.
+    ///
+    /// Cost: O(`num_trees` · `sample_size`) to enumerate candidate
+    /// indices, plus one `delete` per match.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`Self::delete`] errors.
+    pub fn delete_by_value(&mut self, point: &[f64; D]) -> RcfResult<usize> {
+        ensure_finite(point)?;
+        // Stored points live in the forest's scaled space — scale
+        // the caller query so the bit-exact comparison matches.
+        let scaled = self.scale_point_copy(point);
+        let probe: &[f64; D] = &scaled;
+        let mut candidates: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for (_, sampler, _) in &self.trees {
+            for idx in sampler.iter_indices() {
+                candidates.insert(idx);
+            }
+        }
+        let matching: Vec<usize> = candidates
+            .into_iter()
+            .filter(|&idx| self.point_store.point(idx) == Some(probe))
+            .collect();
+        let mut removed = 0_usize;
+        for idx in matching {
+            if self.delete(idx)? {
+                removed = removed.saturating_add(1);
+            }
+        }
+        Ok(removed)
     }
 
     /// Score `point` as an anomaly. Higher = more anomalous.
@@ -258,6 +389,8 @@ impl<const D: usize> RandomCutForest<D> {
     /// - [`RcfError::EmptyForest`] when no tree currently holds any leaf.
     pub fn score(&self, point: &[f64; D]) -> RcfResult<AnomalyScore> {
         ensure_finite(point)?;
+        let scaled = self.scale_point_copy(point);
+        let point = &scaled;
 
         #[cfg(feature = "parallel")]
         let (total, count) = if let Some(p) = self.pool.as_deref() {
@@ -287,6 +420,8 @@ impl<const D: usize> RandomCutForest<D> {
     /// Same as [`score`](Self::score).
     pub fn attribution(&self, point: &[f64; D]) -> RcfResult<DiVector> {
         ensure_finite(point)?;
+        let scaled = self.scale_point_copy(point);
+        let point = &scaled;
 
         #[cfg(feature = "parallel")]
         let (mut accumulator, count) = if let Some(p) = self.pool.as_deref() {

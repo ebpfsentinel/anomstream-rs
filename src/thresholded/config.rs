@@ -181,6 +181,16 @@ impl<const D: usize> ThresholdedForestBuilder<D> {
         self
     }
 
+    /// Set per-dimension multiplicative feature scales on the
+    /// underlying forest. Forwarded to
+    /// [`ForestBuilder::feature_scales`]. See that method for
+    /// semantics and validation rules.
+    #[must_use]
+    pub fn feature_scales(mut self, scales: [f64; D]) -> Self {
+        self.forest = self.forest.feature_scales(scales);
+        self
+    }
+
     /// Override the threshold's z-factor.
     #[must_use]
     pub fn z_factor(mut self, z: f64) -> Self {

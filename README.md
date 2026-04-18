@@ -75,6 +75,23 @@ sustained decline (quiescence / desensitisation), strictly more
 sensitive to small persistent shifts than a `μ + 3σ` gate. Standalone
 type — plug any score-like stream in. See `examples/meta_drift.rs`.
 
+**Explicit retraction** (`update_indexed` / `delete` /
+`delete_by_value`) lets callers track the `point_idx` of each fresh
+observation and remove it later — typically to handle SOC-driven
+false-positive retractions without waiting for the reservoir to evict
+the point naturally. Available on `RandomCutForest`,
+`ThresholdedForest` (plus `process_indexed`), and `TenantForestPool`.
+The pool variants do not auto-create tenants on retraction.
+
+**Per-dim feature scales** (`feature_scales([f64; D])`) pre-scale
+every caller point before it reaches the forest's hot paths. Use to
+rebalance dims with wildly different dynamic ranges (packet-rate in
+`[10², 10⁶]`, protocol ratios in `[0, 1]`, entropy in `[0, 8]` bits) —
+without scaling, random cuts are dominated by the widest dim. Pass
+`1 / stddev[d]` per dim for unit-variance normalisation; mean-centre
+upstream if full z-score is needed. See
+`examples/delete_and_scales.rs`.
+
 ## Quickstart
 
 ```rust,ignore
