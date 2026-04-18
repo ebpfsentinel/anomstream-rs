@@ -75,6 +75,7 @@
 //! | `feature_dim` | `[1, 10000]` | required |
 //! | `num_trees` | `[50, 1000]` | `100` |
 //! | `num_samples_per_tree` | `[1, 2048]` | `256` |
+//! | `time_decay` | `[0, 1]` | `0.1 / sample_size` (tracks AWS Java `CompactSampler`; pass `0.0` to disable recency bias) |
 //!
 //! See the crate's `README.md` for the full conformance matrix and the
 //! comparison against `krcf` and the AWS Java port.

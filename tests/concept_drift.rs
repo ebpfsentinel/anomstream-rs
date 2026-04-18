@@ -18,6 +18,12 @@ fn distribution_shift_flagged_then_normalised() {
     let mut forest = ForestBuilder::<2>::new()
         .num_trees(50)
         .sample_size(64)
+        // Pin time_decay=0 so drift absorption is driven purely by
+        // reservoir refresh — the property this test exercises —
+        // independent of the builder's AWS-style `0.1 / sample_size`
+        // recency bias, which would change the deterministic
+        // sampling trajectory for the seed below.
+        .time_decay(0.0)
         .seed(7)
         .build()
         .expect("AWS-conformant config");

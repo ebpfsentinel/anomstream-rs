@@ -29,8 +29,34 @@ pub const MIN_SAMPLE_SIZE: usize = 1;
 pub const MAX_SAMPLE_SIZE: usize = 2_048;
 /// AWS default for `num_samples_per_tree`.
 pub const DEFAULT_SAMPLE_SIZE: usize = 256;
-/// Default time-decay (no decay — uniform reservoir sampling).
-pub const DEFAULT_TIME_DECAY: f64 = 0.0;
+/// Scaling numerator used to derive the default time-decay factor
+/// from `sample_size`: `default_time_decay = TIME_DECAY_NUMERATOR /
+/// sample_size`. `0.1` matches the AWS Java `CompactSampler` default
+/// and gives an effective reservoir "half-life" of a handful of
+/// reservoirs-worth of input — enough recency bias to track baseline
+/// drift on a streaming agent over hours / days without losing the
+/// uniform-sampling character on each individual window.
+pub const TIME_DECAY_NUMERATOR: f64 = 0.1;
+/// Default time-decay resolved against [`DEFAULT_SAMPLE_SIZE`] —
+/// `0.1 / 256 ≈ 3.9 × 10⁻⁴`. Prefer [`default_time_decay_for`] when
+/// the sample size differs from the default.
+// Cast is precision-safe: 256 fits in f64's mantissa exactly.
+#[allow(clippy::cast_precision_loss)]
+pub const DEFAULT_TIME_DECAY: f64 = TIME_DECAY_NUMERATOR / DEFAULT_SAMPLE_SIZE as f64;
+
+/// Compute the default time-decay for a given `sample_size`:
+/// `0.1 / sample_size`, clamped to `0.0` for `sample_size == 0`
+/// (which is caught separately by [`RcfConfig::validate`]).
+#[must_use]
+pub fn default_time_decay_for(sample_size: usize) -> f64 {
+    if sample_size == 0 {
+        return 0.0;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    {
+        TIME_DECAY_NUMERATOR / sample_size as f64
+    }
+}
 /// Default warmup admission fraction — `1.0` disables the gate and
 /// matches the classic reservoir behaviour. Set below `1.0` (AWS
 /// uses `0.125`) to ramp admission during the cold-start period.
@@ -58,8 +84,11 @@ pub struct RcfConfig {
     pub num_trees: usize,
     /// Maximum reservoir size per tree (`num_samples_per_tree`).
     pub sample_size: usize,
-    /// Time-decay factor applied to reservoir sampling weights.
-    /// `0.0` = uniform sampling.
+    /// Time-decay factor applied to reservoir sampling weights. A
+    /// value of `0.0` restores strict uniform sampling; positive
+    /// values bias the reservoir toward recent points. Default
+    /// resolved by [`ForestBuilder`] is `0.1 / sample_size`, matching
+    /// the AWS Java `CompactSampler` reference.
     pub time_decay: f64,
     /// Optional deterministic seed; `None` falls back to entropy.
     pub seed: Option<u64>,
@@ -158,8 +187,10 @@ impl RcfConfig {
 
 /// Fluent builder for [`RandomCutForest`].
 ///
-/// Defaults match AWS `SageMaker` (`num_trees = 100`,
-/// `sample_size = 256`, `time_decay = 0.0`, RNG seeded from entropy).
+/// Defaults: `num_trees = 100`, `sample_size = 256`,
+/// `time_decay = 0.1 / sample_size` (matches AWS Java
+/// `CompactSampler`; call [`Self::time_decay`] with `0.0` to recover
+/// strict uniform sampling), RNG seeded from entropy.
 ///
 /// `D` is the per-point dimensionality. Callers pin it at construction
 /// via turbofish: `ForestBuilder::<4>::new()`.
@@ -182,6 +213,12 @@ pub struct ForestBuilder<const D: usize> {
     /// Working configuration mutated by the fluent builder methods
     /// and validated when [`ForestBuilder::build`] runs.
     config: RcfConfig,
+    /// Whether the caller has explicitly overridden `time_decay` via
+    /// [`Self::time_decay`]. When `false`, [`Self::sample_size`] and
+    /// [`Self::build`] resolve `time_decay` from the current
+    /// `sample_size` so the AWS `0.1 / sample_size` default tracks
+    /// any reservoir-size override the caller applies.
+    time_decay_explicit: bool,
 }
 
 impl<const D: usize> Default for ForestBuilder<D> {
@@ -198,11 +235,12 @@ impl<const D: usize> ForestBuilder<D> {
             config: RcfConfig {
                 num_trees: DEFAULT_NUM_TREES,
                 sample_size: DEFAULT_SAMPLE_SIZE,
-                time_decay: DEFAULT_TIME_DECAY,
+                time_decay: default_time_decay_for(DEFAULT_SAMPLE_SIZE),
                 seed: None,
                 num_threads: None,
                 initial_accept_fraction: DEFAULT_INITIAL_ACCEPT_FRACTION,
             },
+            time_decay_explicit: false,
         }
     }
 
@@ -213,17 +251,29 @@ impl<const D: usize> ForestBuilder<D> {
         self
     }
 
-    /// Override the per-tree reservoir size.
+    /// Override the per-tree reservoir size. When `time_decay` has
+    /// not been explicitly set via [`Self::time_decay`], the default
+    /// `0.1 / sample_size` is re-resolved against the new value so
+    /// the effective recency bias stays consistent with AWS's
+    /// `CompactSampler` formula.
     #[must_use]
     pub fn sample_size(mut self, s: usize) -> Self {
         self.config.sample_size = s;
+        if !self.time_decay_explicit {
+            self.config.time_decay = default_time_decay_for(s);
+        }
         self
     }
 
-    /// Override the sampler time-decay factor.
+    /// Override the sampler time-decay factor. Pass `0.0` to disable
+    /// recency bias and recover strict uniform reservoir sampling.
+    /// Once called, the builder stops auto-resolving `time_decay`
+    /// from subsequent [`Self::sample_size`] changes — the caller's
+    /// choice wins.
     #[must_use]
     pub fn time_decay(mut self, d: f64) -> Self {
         self.config.time_decay = d;
+        self.time_decay_explicit = true;
         self
     }
 
@@ -444,8 +494,61 @@ mod tests {
         assert_eq!(b.dimension(), 8);
         assert_eq!(b.config().num_trees, 100);
         assert_eq!(b.config().sample_size, 256);
-        assert!(b.config().time_decay.abs() < f64::EPSILON);
+        assert!(
+            (b.config().time_decay - TIME_DECAY_NUMERATOR / 256.0).abs() < f64::EPSILON,
+            "default time_decay should resolve to 0.1 / sample_size, got {}",
+            b.config().time_decay
+        );
         assert_eq!(b.config().seed, None);
+    }
+
+    #[test]
+    fn builder_sample_size_override_rescales_default_time_decay() {
+        let b = ForestBuilder::<4>::new().sample_size(128);
+        // No explicit time_decay — should auto-resolve to 0.1/128.
+        assert!(
+            (b.config().time_decay - TIME_DECAY_NUMERATOR / 128.0).abs() < f64::EPSILON,
+            "sample_size(128) should rescale default to 0.1 / 128, got {}",
+            b.config().time_decay,
+        );
+    }
+
+    #[test]
+    fn builder_explicit_time_decay_sticks_across_sample_size_override() {
+        let b = ForestBuilder::<4>::new()
+            .time_decay(0.05)
+            .sample_size(128);
+        // Explicit override must not be clobbered by later sample_size.
+        assert!((b.config().time_decay - 0.05).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn builder_sample_size_override_before_time_decay() {
+        let b = ForestBuilder::<4>::new()
+            .sample_size(128)
+            .time_decay(0.05);
+        // Explicit override applied after sample_size wins too.
+        assert!((b.config().time_decay - 0.05).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn builder_time_decay_zero_still_accepted() {
+        let b = ForestBuilder::<4>::new().time_decay(0.0);
+        assert!(b.config().time_decay.abs() < f64::EPSILON);
+        b.build().expect("time_decay=0 must still build");
+    }
+
+    #[test]
+    fn default_time_decay_for_zero_sample_size_is_zero() {
+        assert!(default_time_decay_for(0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn default_time_decay_for_default_sample_size_matches_constant() {
+        assert!(
+            (default_time_decay_for(DEFAULT_SAMPLE_SIZE) - DEFAULT_TIME_DECAY).abs()
+                < f64::EPSILON,
+        );
     }
 
     #[test]

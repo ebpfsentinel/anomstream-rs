@@ -103,6 +103,7 @@ Reservoir sampling without replacement is from:
 | `feature_dim ∈ [1, 10000]` | const-generic `D`, validated by `ForestBuilder::build` |
 | `num_trees ∈ [50, 1000]`, default `100` | enforced by `ForestBuilder` |
 | `num_samples_per_tree ∈ [1, 2048]`, default `256` | enforced by `ForestBuilder` |
+| `time_decay = 0.1 / sample_size` | resolved by `ForestBuilder`; pass `.time_decay(0.0)` to disable |
 | Reservoir sampling without replacement | `sampler::ReservoirSampler` |
 | Score = average across trees | `forest::RandomCutForest::score` |
 | Anomaly threshold `≥ 3σ` from mean | caller responsibility |
