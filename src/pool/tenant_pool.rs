@@ -282,6 +282,24 @@ where
         self.touch_or_create(key)?.attribution(point)
     }
 
+    /// Early-termination scoring on a tenant's detector. Auto-
+    /// creates the tenant (like [`Self::process`]) — cold-start
+    /// returns `EmptyForest`, just like
+    /// [`ThresholdedForest::score_early_term`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates factory errors and
+    /// [`ThresholdedForest::score_early_term`] errors.
+    pub fn score_early_term(
+        &mut self,
+        key: &K,
+        point: &[f64; D],
+        config: crate::early_term::EarlyTermConfig,
+    ) -> RcfResult<crate::early_term::EarlyTermScore> {
+        self.touch_or_create(key)?.score_early_term(point, config)
+    }
+
     /// Retract a previously-observed point from a tenant's forest by
     /// its `point_idx`. Returns `Ok(false)` (and does not create the
     /// tenant) when the tenant is absent — SOC retraction paths must

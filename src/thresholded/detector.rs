@@ -261,6 +261,22 @@ impl<const D: usize> ThresholdedForest<D> {
         self.forest.attribution(point)
     }
 
+    /// Early-termination variant of the scoring path — delegates to
+    /// [`RandomCutForest::score_early_term`]. Does not update the
+    /// thresholded layer's stats (this is a read path, not a
+    /// training path).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`RandomCutForest::score_early_term`].
+    pub fn score_early_term(
+        &self,
+        point: &[f64; D],
+        config: crate::early_term::EarlyTermConfig,
+    ) -> RcfResult<crate::early_term::EarlyTermScore> {
+        self.forest.score_early_term(point, config)
+    }
+
     /// Drop every statistic and warm-up sample. The underlying forest
     /// is left untouched — callers who want a full reset should
     /// rebuild via the builder. Used by tests and by callers that

@@ -207,6 +207,10 @@ pub mod names {
     pub const DRIFT_S_HIGH: &str = "rcf_drift_s_high";
     /// Histogram: downward CUSUM accumulator after each observation.
     pub const DRIFT_S_LOW: &str = "rcf_drift_s_low";
+    /// Histogram: trees actually walked per
+    /// [`crate::RandomCutForest::score_early_term`] call — use with
+    /// [`FOREST_TREES`] to compute the latency savings distribution.
+    pub const EARLY_TERM_TREES: &str = "rcf_early_term_trees";
 }
 
 #[cfg(test)]

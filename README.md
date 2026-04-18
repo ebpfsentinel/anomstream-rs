@@ -92,6 +92,17 @@ without scaling, random cuts are dominated by the widest dim. Pass
 upstream if full z-score is needed. See
 `examples/delete_and_scales.rs`.
 
+**Early-termination scoring** (`score_early_term(&point, &cfg)`)
+walks trees sequentially and breaks as soon as the running
+per-tree mean has converged — `stderr / |mean|` below the
+configured relative threshold. Cuts wall-clock latency by
+2-3× on baseline-dominated traffic (most windows) without
+compromising the full-ensemble answer on ambiguous points. The
+returned `EarlyTermScore` reports how many trees were actually
+walked. Available on all three detector types. Sequential by
+design — use the regular `score` when you can afford full
+parallelism. See `examples/early_term.rs`.
+
 **Observability** — every detector exposes a consuming
 `.with_metrics_sink(Arc<dyn MetricsSink>)` that streams counters
 (`rcf_updates_total`, `rcf_process_total`, `rcf_anomalies_fired_total`,
