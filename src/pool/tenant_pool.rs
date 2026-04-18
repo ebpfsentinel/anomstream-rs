@@ -282,6 +282,37 @@ where
         self.touch_or_create(key)?.attribution(point)
     }
 
+    /// Timestamped variant of [`Self::process`] — tags the freshly
+    /// inserted point with `timestamp` on the tenant's forest, so
+    /// [`Self::delete_before`] can retract history by age.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`ThresholdedForest::process_at`] errors.
+    pub fn process_at(
+        &mut self,
+        key: &K,
+        point: [f64; D],
+        timestamp: u64,
+    ) -> RcfResult<AnomalyGrade> {
+        self.touch_or_create(key)?.process_at(point, timestamp)
+    }
+
+    /// Retract every point older than `cutoff` from a tenant's
+    /// detector. Returns `Ok(0)` (without creating the tenant) when
+    /// the tenant is absent — retention paths must never spin up a
+    /// fresh detector.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`ThresholdedForest::delete_before`] errors.
+    pub fn delete_before(&mut self, key: &K, cutoff: u64) -> RcfResult<usize> {
+        match self.get_mut(key) {
+            Some(detector) => detector.delete_before(cutoff),
+            None => Ok(0),
+        }
+    }
+
     /// Early-termination scoring on a tenant's detector. Auto-
     /// creates the tenant (like [`Self::process`]) — cold-start
     /// returns `EmptyForest`, just like

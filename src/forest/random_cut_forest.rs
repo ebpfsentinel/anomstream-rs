@@ -81,6 +81,15 @@ pub struct RandomCutForest<const D: usize> {
     #[cfg(feature = "std")]
     #[cfg_attr(feature = "serde", serde(skip, default = "crate::metrics::default_sink"))]
     metrics: std::sync::Arc<dyn crate::metrics::MetricsSink>,
+    /// Optional per-point timestamps captured by [`Self::update_at`]
+    /// / [`Self::update_indexed_at`]. Keyed by the `point_idx`
+    /// returned at insertion time. Populated only when the caller
+    /// opts in via the `_at` APIs — the classic
+    /// [`Self::update`] path never touches this map. Cleaned up
+    /// whenever a slot's reservoir refcount drops to zero
+    /// (reservoir eviction or explicit [`Self::delete`]).
+    #[cfg_attr(feature = "serde", serde(default))]
+    timestamps: std::collections::HashMap<usize, u64>,
 }
 
 impl<const D: usize> RandomCutForest<D> {
@@ -154,6 +163,7 @@ impl<const D: usize> RandomCutForest<D> {
             pool,
             #[cfg(feature = "std")]
             metrics: crate::metrics::default_sink(),
+            timestamps: std::collections::HashMap::new(),
         })
     }
 
@@ -297,6 +307,109 @@ impl<const D: usize> RandomCutForest<D> {
         self.insert_point(scaled)
     }
 
+    /// Insert `point` and tag it with `timestamp` — a caller-
+    /// supplied monotonic sequence or epoch value. The timestamp
+    /// feeds the [`Self::delete_before`] retention path so callers
+    /// can prune history by age (GDPR, `NIS2` data-retention
+    /// windows, forensic replay of a specific window).
+    ///
+    /// Timestamps are tracked in a side-map keyed by the fresh
+    /// `point_idx`; the map entry is dropped automatically when the
+    /// reservoir evicts the point or [`Self::delete`] retracts it.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::update`].
+    pub fn update_at(&mut self, point: [f64; D], timestamp: u64) -> RcfResult<()> {
+        let idx = self.update_indexed_at(point, timestamp)?;
+        let _ = idx;
+        Ok(())
+    }
+
+    /// [`Self::update_at`] variant that returns the fresh `point_idx`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::update_indexed`].
+    pub fn update_indexed_at(&mut self, point: [f64; D], timestamp: u64) -> RcfResult<usize> {
+        let idx = self.update_indexed(point)?;
+        // Only record the timestamp if the store still holds the
+        // slot — a sample_size=0 forest or an immediately-rejected
+        // reservoir drops the point via `drop_unreferenced`, in
+        // which case there is no live idx to tag.
+        if self.point_store.ref_count(idx) > 0 {
+            self.timestamps.insert(idx, timestamp);
+        }
+        Ok(idx)
+    }
+
+    /// Retract every point whose tracked timestamp is strictly less
+    /// than `cutoff`. Returns the number of indices deleted.
+    ///
+    /// Points inserted via the classic [`Self::update`] /
+    /// [`Self::update_indexed`] path (no timestamp) are ignored —
+    /// retention requires the caller to have opted into the `_at`
+    /// APIs.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`Self::delete`] failures.
+    pub fn delete_before(&mut self, cutoff: u64) -> RcfResult<usize> {
+        let victims: Vec<usize> = self
+            .timestamps
+            .iter()
+            .filter_map(|(idx, ts)| if *ts < cutoff { Some(*idx) } else { None })
+            .collect();
+        let mut removed = 0_usize;
+        for idx in victims {
+            if self.delete(idx)? {
+                removed = removed.saturating_add(1);
+            }
+            // Even if delete reported `false` (e.g. the point was
+            // already evicted and the side-map is stale), scrub the
+            // dangling timestamp so subsequent `delete_before` calls
+            // do not rescan it.
+            self.timestamps.remove(&idx);
+        }
+        Ok(removed)
+    }
+
+    /// Timestamp recorded for `point_idx`, or `None` when the slot
+    /// was inserted without a timestamp / has been evicted.
+    #[must_use]
+    pub fn point_timestamp(&self, point_idx: usize) -> Option<u64> {
+        self.timestamps.get(&point_idx).copied()
+    }
+
+    /// Oldest tracked timestamp still live in the forest, or `None`
+    /// when no timestamped points remain.
+    #[must_use]
+    pub fn oldest_timestamp(&self) -> Option<u64> {
+        self.timestamps.values().min().copied()
+    }
+
+    /// Newest tracked timestamp still live in the forest.
+    #[must_use]
+    pub fn newest_timestamp(&self) -> Option<u64> {
+        self.timestamps.values().max().copied()
+    }
+
+    /// Number of timestamped points currently tracked.
+    #[must_use]
+    pub fn tracked_timestamps(&self) -> usize {
+        self.timestamps.len()
+    }
+
+    /// Attach `timestamp` to a specific `point_idx` after the fact —
+    /// used by higher-level wrappers (e.g.
+    /// [`crate::ThresholdedForest::process_indexed_at`]) that cannot
+    /// route their insertion through [`Self::update_indexed_at`]
+    /// because the scoring path is mixed into the update. Overwrites
+    /// any previous timestamp on the same index.
+    pub fn set_point_timestamp(&mut self, point_idx: usize, timestamp: u64) {
+        self.timestamps.insert(point_idx, timestamp);
+    }
+
     /// Core insertion body — performs the full `update` pipeline and
     /// returns the freshly assigned `point_idx`. Shared by
     /// [`Self::update`] and [`Self::update_indexed`] so the hot-path
@@ -310,7 +423,10 @@ impl<const D: usize> RandomCutForest<D> {
         let pool = self.pool.clone();
 
         let Self {
-            trees, point_store, ..
+            trees,
+            point_store,
+            timestamps,
+            ..
         } = self;
         let store: &PointStore<D> = point_store;
 
@@ -326,10 +442,12 @@ impl<const D: usize> RandomCutForest<D> {
 
         for evicted in pending_frees {
             point_store.set_free(evicted)?;
+            timestamps.remove(&evicted);
         }
 
         if point_store.ref_count(new_idx) == 0 {
             point_store.drop_unreferenced(new_idx)?;
+            timestamps.remove(&new_idx);
         }
 
         self.updates_seen = self.updates_seen.saturating_add(1);
@@ -356,7 +474,10 @@ impl<const D: usize> RandomCutForest<D> {
     /// [`PointStore`] failures.
     pub fn delete(&mut self, point_idx: usize) -> RcfResult<bool> {
         let Self {
-            trees, point_store, ..
+            trees,
+            point_store,
+            timestamps,
+            ..
         } = self;
         let mut removed_from_any = false;
         let mut went_to_zero = false;
@@ -371,6 +492,7 @@ impl<const D: usize> RandomCutForest<D> {
         }
         if went_to_zero {
             point_store.set_free(point_idx)?;
+            timestamps.remove(&point_idx);
         }
         #[cfg(feature = "std")]
         if removed_from_any {

@@ -92,6 +92,14 @@ without scaling, random cuts are dominated by the widest dim. Pass
 upstream if full z-score is needed. See
 `examples/delete_and_scales.rs`.
 
+**Point timestamps + retention** (`update_at(point, ts)` /
+`process_at(point, ts)` / `delete_before(cutoff)`) tag each fresh
+observation with a caller-supplied `u64` (epoch ms, sequence
+number…) and prune history by age. Reservoir eviction cleans the
+side-map automatically. Per-tenant on `TenantForestPool`. Intended
+for GDPR / NIS2 data-retention windows and forensic replay of a
+specific period. See `examples/retention.rs`.
+
 **Early-termination scoring** (`score_early_term(&point, &cfg)`)
 walks trees sequentially and breaks as soon as the running
 per-tree mean has converged — `stderr / |mean|` below the

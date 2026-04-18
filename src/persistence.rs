@@ -39,17 +39,19 @@ use crate::forest::RandomCutForest;
 use crate::thresholded::ThresholdedForest;
 
 /// Persistence format version for [`RandomCutForest`]. Bump on any
-/// breaking layout change. Version `2` is `postcard`; version `1`
-/// was the original `bincode 2` payload — the serialiser changed
-/// when `RustSec` flagged `bincode` as unmaintained.
-pub const PERSISTENCE_VERSION: u32 = 2;
+/// breaking layout change. Version `3` adds the per-point
+/// timestamp side-map used by [`RandomCutForest::update_at`] /
+/// [`RandomCutForest::delete_before`]; version `2` was the first
+/// `postcard` payload after `RustSec` flagged `bincode` as
+/// unmaintained; version `1` was the original `bincode 2` payload.
+pub const PERSISTENCE_VERSION: u32 = 3;
 
 /// Persistence format version for [`ThresholdedForest`]. Distinct
 /// from [`PERSISTENCE_VERSION`] because the threshold envelope carries
 /// additional state (EMA stats, threshold config) that evolves on its
-/// own cadence. Version `2` switched the underlying binary serialiser
-/// from `bincode` to `postcard`.
-pub const THRESHOLDED_PERSISTENCE_VERSION: u32 = 2;
+/// own cadence. Version `3` inherits the forest's timestamp side-map
+/// bump.
+pub const THRESHOLDED_PERSISTENCE_VERSION: u32 = 3;
 
 /// Number of bytes reserved for the version prefix.
 pub const VERSION_PREFIX_BYTES: usize = 4;

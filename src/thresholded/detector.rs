@@ -352,6 +352,55 @@ impl<const D: usize> ThresholdedForest<D> {
         Ok((idx, verdict))
     }
 
+    /// Timestamped variant of [`Self::process`] — tags the freshly
+    /// inserted point with `timestamp` so callers can later prune
+    /// history via [`RandomCutForest::delete_before`]. Returns the
+    /// same graded verdict as [`Self::process`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::process`].
+    pub fn process_at(
+        &mut self,
+        point: [f64; D],
+        timestamp: u64,
+    ) -> RcfResult<AnomalyGrade> {
+        let (_, verdict) = self.process_indexed_at(point, timestamp)?;
+        Ok(verdict)
+    }
+
+    /// Timestamped variant of [`Self::process_indexed`] — records
+    /// the caller-supplied `timestamp` against the fresh `point_idx`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::process_indexed`].
+    pub fn process_indexed_at(
+        &mut self,
+        point: [f64; D],
+        timestamp: u64,
+    ) -> RcfResult<(usize, AnomalyGrade)> {
+        let (idx, verdict) = self.process_indexed(point)?;
+        // process_indexed may have called update_indexed, so the
+        // side-map entry we tag here is attached to the correct
+        // fresh point_idx — even when the call path went through
+        // the cold-start warming-up branch.
+        if self.forest.point_store().ref_count(idx) > 0 {
+            self.forest.set_point_timestamp(idx, timestamp);
+        }
+        Ok((idx, verdict))
+    }
+
+    /// Retract every point whose timestamp is strictly less than
+    /// `cutoff`. Forwards to [`RandomCutForest::delete_before`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`RandomCutForest::delete_before`] failures.
+    pub fn delete_before(&mut self, cutoff: u64) -> RcfResult<usize> {
+        self.forest.delete_before(cutoff)
+    }
+
     /// Emit the counters / gauges / histograms associated with a
     /// completed `process` call. Called once per public process
     /// entry so cold-start warming-up verdicts are counted too.
