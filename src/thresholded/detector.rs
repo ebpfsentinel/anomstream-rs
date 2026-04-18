@@ -261,6 +261,57 @@ impl<const D: usize> ThresholdedForest<D> {
         self.forest.attribution(point)
     }
 
+    /// Bulk-score a batch of points without touching the threshold
+    /// layer's stats. Returns [`AnomalyGrade`]s graded against the
+    /// current adaptive threshold — identical to what
+    /// [`Self::score_only`] would emit per point, but parallelised
+    /// across the batch via rayon when the `parallel` feature is
+    /// enabled.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`Self::score_only`] error hit while
+    /// processing the batch.
+    pub fn score_only_many(&self, points: &[[f64; D]]) -> RcfResult<Vec<AnomalyGrade>> {
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::prelude::*;
+            points
+                .par_iter()
+                .map(|p| self.score_only(p))
+                .collect::<RcfResult<Vec<_>>>()
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
+            points.iter().map(|p| self.score_only(p)).collect()
+        }
+    }
+
+    /// Bulk per-feature attribution. Delegates to
+    /// [`RandomCutForest::attribution_many`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`RandomCutForest::attribution_many`].
+    pub fn attribution_many(&self, points: &[[f64; D]]) -> RcfResult<Vec<DiVector>> {
+        self.forest.attribution_many(points)
+    }
+
+    /// Bulk early-termination scoring. Delegates to
+    /// [`RandomCutForest::score_many_early_term`] — the threshold
+    /// layer does not alter the scoring path.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`RandomCutForest::score_many_early_term`].
+    pub fn score_many_early_term(
+        &self,
+        points: &[[f64; D]],
+        config: crate::early_term::EarlyTermConfig,
+    ) -> RcfResult<Vec<crate::early_term::EarlyTermScore>> {
+        self.forest.score_many_early_term(points, config)
+    }
+
     /// Early-termination variant of the scoring path — delegates to
     /// [`RandomCutForest::score_early_term`]. Does not update the
     /// thresholded layer's stats (this is a read path, not a

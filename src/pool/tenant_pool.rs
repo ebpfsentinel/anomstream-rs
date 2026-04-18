@@ -282,6 +282,55 @@ where
         self.touch_or_create(key)?.attribution(point)
     }
 
+    /// Bulk-score a batch of points through the tenant's detector
+    /// without creating the tenant on absence — retention-aware
+    /// read path. Returns `None` when the tenant is absent, or the
+    /// batch of graded verdicts otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`ThresholdedForest::score_only_many`] errors.
+    pub fn score_only_many(
+        &mut self,
+        key: &K,
+        points: &[[f64; D]],
+    ) -> RcfResult<Option<Vec<AnomalyGrade>>> {
+        match self.get_mut(key) {
+            Some(detector) => Ok(Some(detector.score_only_many(points)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Bulk early-termination scoring on a tenant's detector.
+    /// Auto-creates the tenant (consistent with `process`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`ThresholdedForest::score_many_early_term`] errors.
+    pub fn score_many_early_term(
+        &mut self,
+        key: &K,
+        points: &[[f64; D]],
+        config: crate::early_term::EarlyTermConfig,
+    ) -> RcfResult<Vec<crate::early_term::EarlyTermScore>> {
+        self.touch_or_create(key)?
+            .score_many_early_term(points, config)
+    }
+
+    /// Bulk per-feature attribution on a tenant's detector.
+    /// Auto-creates the tenant.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`ThresholdedForest::attribution_many`] errors.
+    pub fn attribution_many(
+        &mut self,
+        key: &K,
+        points: &[[f64; D]],
+    ) -> RcfResult<Vec<DiVector>> {
+        self.touch_or_create(key)?.attribution_many(points)
+    }
+
     /// Timestamped variant of [`Self::process`] — tags the freshly
     /// inserted point with `timestamp` on the tenant's forest, so
     /// [`Self::delete_before`] can retract history by age.

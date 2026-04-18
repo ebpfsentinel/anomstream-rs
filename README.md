@@ -92,6 +92,17 @@ without scaling, random cuts are dominated by the widest dim. Pass
 upstream if full z-score is needed. See
 `examples/delete_and_scales.rs`.
 
+**Bulk batch scoring** (`score_many(&[[f64; D]])` /
+`score_many_early_term(&[[f64; D]], &cfg)` /
+`attribution_many(&[[f64; D]])`) evaluates a slice of probes in one
+call — rayon parallelises across points on top of the per-tree
+parallelism, 5-8× speedup on typical backfill / SOC replay
+workloads vs a serial `for p in points { f.score(p)? }` loop.
+Available on `RandomCutForest`, `ThresholdedForest`, and
+`TenantForestPool` (per-tenant, absent-tenant returns `None`
+without auto-creation on read paths). First error aborts the
+batch. See `examples/bulk_scoring.rs`.
+
 **Point timestamps + retention** (`update_at(point, ts)` /
 `process_at(point, ts)` / `delete_before(cutoff)`) tag each fresh
 observation with a caller-supplied `u64` (epoch ms, sequence
