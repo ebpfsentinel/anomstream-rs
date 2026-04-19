@@ -14,7 +14,7 @@
 //! the test needs it fetched to disk. Run manually:
 //!
 //! ```bash
-//! ./scripts/nab/fetch.sh /opt/nab
+//! git clone --depth 1 https://github.com/numenta/NAB.git /opt/nab
 //! RCF_NAB_PATH=/opt/nab \
 //!     cargo test --test nab --all-features -- --ignored --nocapture
 //! ```
@@ -193,8 +193,8 @@ fn score_file(rows: &[Row], windows: &[(String, String)]) -> (Vec<f64>, Vec<u8>)
 fn realknowncause_aggregate_auc_above_floor() {
     let Some(root) = nab_root() else {
         panic!(
-            "RCF_NAB_PATH not set — fetch via scripts/nab/fetch.sh and export \
-             the path before running this ignored test"
+            "RCF_NAB_PATH not set — clone https://github.com/numenta/NAB \
+             and export the path before running this ignored test"
         );
     };
     let data_dir = root.join("data/realKnownCause");

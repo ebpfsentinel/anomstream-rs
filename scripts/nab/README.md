@@ -1,53 +1,91 @@
-# NAB — detection-quality benchmark on real corpora
+# NAB — detection-quality benchmark
 
-The Numenta Anomaly Benchmark is the canonical public data set
-for streaming anomaly detection.  `scripts/nab/fetch.sh` clones
-the upstream repo (Apache 2.0); `tests/nab.rs` is an `#[ignore]`
-integration test that runs rcf-rs against the `realKnownCause`
-subset and reports per-file + aggregate AUC.
+The Numenta Anomaly Benchmark (Apache 2.0) is the canonical
+public dataset for streaming anomaly detection.
 
-## Running
+Three runners use identical protocol so their AUCs sit side by
+side:
+
+- `tests/nab.rs` — `#[ignore]` integration test, rcf-rs side.
+- `bench_rrcf_nab.py` — rrcf 0.4.4.
+- `RcfBenchNab.java` — AWS `randomcutforest-java` 4.4.0 (see
+  `../external-bench/README-aws-java.md` for the Maven Central
+  jar).
+
+## Fetch the dataset
 
 ```bash
-./scripts/nab/fetch.sh /opt/nab
-RCF_NAB_PATH=/opt/nab \
-    cargo test --test nab --all-features -- --ignored --nocapture
+# ~50 MB, one-shot clone.
+git clone --depth 1 https://github.com/numenta/NAB.git /opt/nab
 ```
 
-The test expects the standard NAB layout:
+Layout after clone:
 
 ```
-$RCF_NAB_PATH/
+/opt/nab/
   data/realKnownCause/*.csv
   labels/combined_windows.json
 ```
 
+## Running
+
+```bash
+# rcf-rs.
+RCF_NAB_PATH=/opt/nab \
+    cargo test --test nab --all-features -- --ignored --nocapture
+
+# rrcf.
+python3 scripts/nab/bench_rrcf_nab.py --nab /opt/nab
+
+# AWS Java.
+JAR=/tmp/aws-rcf/randomcutforest-core-4.4.0.jar
+javac -cp "$JAR" scripts/nab/RcfBenchNab.java
+java -cp "scripts/nab:$JAR" RcfBenchNab /opt/nab
+```
+
 ## Scoring protocol
 
-- **Feature engineering**: 4-lag temporal embedding (`[v_{t-3},
-  v_{t-2}, v_{t-1}, v_t]`) → `D = 4`. RCF on raw scalars loses
-  most of its value; lag features give the tree cuts meaningful
-  axes.
+- **Feature engineering**: 8-lag temporal embedding
+  (`[v_{t-7}, … v_t]`) → `D = 8`. RCF on raw scalars loses most
+  of its value; lag features give the tree cuts meaningful axes.
 - **Two-phase**: warm on the first 15 % of each series (assumed
-  mostly clean — NAB anomalies are concentrated mid-stream), then
-  stream-score the rest.
-- **Labels**: timestamp comparison against `combined_windows.json`
-  `[start, end]` pairs. A row is labelled anomalous iff its
-  timestamp falls inside *any* window.
-- **AUC**: trapezoidal rule on the ROC curve; per-file + weighted
-  aggregate (by number of anomalous rows).
+  mostly clean — NAB anomalies are concentrated mid-stream),
+  then score the rest against the frozen forest.
+- **Labels**: timestamp comparison against
+  `combined_windows.json` `[start, end]` pairs. A row is
+  labelled anomalous iff its timestamp falls inside *any*
+  window.
+- **AUC**: trapezoidal rule on the ROC curve; per-file +
+  weighted aggregate (weighted by number of anomalous rows).
 
-## Expected thresholds
+## Measured numbers (i7-1370P, 100 trees × 256 samples)
 
-NAB is a hard benchmark. Published state-of-the-art per-file AUC
-sits in the 0.65–0.90 range depending on the series. We pin the
-aggregate floor at `0.60` as a regression guard — not a quality
-claim. Substantially better numbers require time-aware detectors
-(HTM, sequence models) beyond the RCF scope.
+Weighted aggregate AUC on the `realKnownCause` subset (7 files):
 
-## Not covered
+| Impl | Aggregate AUC |
+|---|---|
+| AWS Java 4.4.0 | **0.757** |
+| rrcf 0.4.4 | 0.748 |
+| rcf-rs 0.0.0-dev | 0.615 |
 
-- **Yahoo S5**: requires registration with Yahoo and forbids
-  redistribution; out of scope for a public open-source crate.
-- **Wikipedia pageviews**: not a labeled anomaly corpus — public
-  time series without ground truth.
+Per-file breakdown:
+
+| File | `rcf-rs` | `rrcf` | AWS Java |
+|---|---|---|---|
+| `ambient_temperature_system_failure` | 0.604 | 0.734 | **0.786** |
+| `cpu_utilization_asg_misconfiguration` | 0.749 | 0.849 | **0.906** |
+| `ec2_request_latency_system_failure` | **0.525** | 0.481 | 0.482 |
+| `machine_temperature_system_failure` | 0.584 | 0.880 | **0.883** |
+| `nyc_taxi` | **0.588** | 0.571 | 0.540 |
+| `rogue_agent_key_hold` | 0.379 | 0.535 | **0.633** |
+| `rogue_agent_key_updown` | **0.544** | 0.657 | 0.542 |
+
+`rrcf` and AWS Java both use probe-based scoring (insert probe
+then query displacement), which explains the ~13-point gap vs
+`rcf-rs`'s isolation-depth `score()`. The isolation-depth path
+is ~18× faster to score per point; the probe-based path is
+more accurate on context-sensitive anomalies. Both are valid
+RCF scoring conventions.
+
+The rcf-rs ignored test pins an aggregate-AUC floor of `0.60`
+as a regression guard.

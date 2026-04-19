@@ -4,7 +4,7 @@ file + aggregate AUC, same protocol as `tests/nab.rs` (8-lag
 temporal embedding, 15 % warm fraction, frozen baseline).
 
 Usage:
-    ./scripts/nab/fetch.sh /opt/nab
+    git clone --depth 1 https://github.com/numenta/NAB.git /opt/nab
     python3 scripts/nab/bench_rrcf_nab.py --nab /opt/nab
 """
 
