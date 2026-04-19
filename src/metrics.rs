@@ -209,8 +209,14 @@ pub mod names {
     /// that short-circuited (walked fewer than `num_trees`). Pair
     /// with the call site's total to derive the early-stop ratio.
     pub const EARLY_TERM_STOPPED_TOTAL: &str = "rcf_early_term_stopped_total";
-    /// Counter: every [`crate::TenantForestPool`] LRU eviction.
+    /// Counter: every [`crate::TenantForestPool`] eviction (LRU + TTL
+    /// paths combined). Pair with [`TENANT_IDLE_EVICTIONS_TOTAL`] to
+    /// derive the pressure-driven share.
     pub const TENANT_EVICTIONS_TOTAL: &str = "rcf_tenant_evictions_total";
+    /// Counter: idle / TTL-driven evictions from
+    /// [`crate::TenantForestPool::evict_idle`]. Subset of
+    /// [`TENANT_EVICTIONS_TOTAL`].
+    pub const TENANT_IDLE_EVICTIONS_TOTAL: &str = "rcf_tenant_idle_evictions_total";
     /// Counter: pool-factory invocations — a fresh tenant entered
     /// the resident set. Diverges from `TENANT_EVICTIONS_TOTAL` so
     /// churn (create − evict) is observable.

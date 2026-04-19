@@ -244,6 +244,29 @@ fn trcf_sink_exposes_ema_and_observation_gauges() {
 }
 
 #[test]
+fn pool_sink_records_idle_eviction_counter() {
+    let sink = Arc::new(TestSink::new());
+    let mut pool: TenantForestPool<u32, 2> = TenantForestPool::new(4, || {
+        ThresholdedForestBuilder::<2>::new()
+            .num_trees(50)
+            .sample_size(16)
+            .seed(16)
+            .build()
+    })
+    .unwrap()
+    .with_metrics_sink(sink.clone());
+    let mut rng = ChaCha8Rng::seed_from_u64(16);
+    pool.process(&1, noisy(&mut rng)).unwrap();
+    pool.process(&2, noisy(&mut rng)).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let evicted = pool.evict_idle(std::time::Duration::from_millis(10));
+    assert_eq!(evicted.len(), 2);
+    assert_eq!(sink.counter(names::TENANT_IDLE_EVICTIONS_TOTAL), 2);
+    // Aggregate evictions counter also includes the two TTL fires.
+    assert!(sink.counter(names::TENANT_EVICTIONS_TOTAL) >= 2);
+}
+
+#[test]
 fn pool_sink_records_tenant_created_and_capacity() {
     let sink = Arc::new(TestSink::new());
     let mut pool: TenantForestPool<u32, 2> = TenantForestPool::new(4, || {

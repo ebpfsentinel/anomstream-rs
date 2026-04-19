@@ -32,6 +32,7 @@
 use core::cmp::Ordering;
 use core::hash::Hash;
 use std::collections::{BinaryHeap, HashMap};
+use std::time::{Duration, Instant};
 
 use crate::bootstrap::BootstrapReport;
 use crate::domain::DiVector;
@@ -51,6 +52,12 @@ struct TenantSlot<const D: usize> {
     /// Monotonically increasing tick assigned by the pool on every
     /// access. The minimum tick identifies the LRU victim.
     last_access: u64,
+    /// Wall-clock timestamp of the last access — drives the
+    /// [`TenantForestPool::evict_idle`] TTL path. Independent from
+    /// the `last_access` tick so monotonic-counter LRU and
+    /// wall-clock TTL stay orthogonal (the tick can wrap under
+    /// pathological churn but the `Instant` stays truthful).
+    last_access_instant: Instant,
 }
 
 /// Bounded-heap entry used by [`TenantForestPool::most_similar`].
@@ -265,8 +272,10 @@ where
     /// freshly accessed.
     pub fn get(&mut self, key: &K) -> Option<&ThresholdedForest<D>> {
         let tick = self.bump_access();
+        let now = Instant::now();
         self.forests.get_mut(key).map(|slot| {
             slot.last_access = tick;
+            slot.last_access_instant = now;
             &*slot.forest
         })
     }
@@ -277,8 +286,10 @@ where
     /// the pool.
     pub fn get_mut(&mut self, key: &K) -> Option<&mut ThresholdedForest<D>> {
         let tick = self.bump_access();
+        let now = Instant::now();
         self.forests.get_mut(key).map(|slot| {
             slot.last_access = tick;
+            slot.last_access_instant = now;
             slot.forest.as_mut()
         })
     }
@@ -690,6 +701,7 @@ where
     /// `capacity`, the least-recently-used tenant is evicted first.
     pub fn insert(&mut self, key: K, forest: ThresholdedForest<D>) -> Option<ThresholdedForest<D>> {
         let tick = self.bump_access();
+        let now = Instant::now();
         if !self.forests.contains_key(&key) && self.forests.len() >= self.capacity {
             self.evict_lru();
         }
@@ -700,6 +712,7 @@ where
                 TenantSlot {
                     forest: Box::new(forest),
                     last_access: tick,
+                    last_access_instant: now,
                 },
             )
             .map(|slot| *slot.forest);
@@ -764,6 +777,53 @@ where
         Some((victim_key, *slot.forest))
     }
 
+    /// Evict every tenant whose wall-clock last-access is older than
+    /// `ttl`. Returns the evicted `(key, detector)` pairs in
+    /// unspecified order so callers can persist them before release
+    /// (SOC retention windows, GDPR purge, cold-path archival).
+    ///
+    /// Orthogonal to [`Self::evict_lru`]: LRU sheds on *capacity
+    /// pressure*, `evict_idle` sheds on *wall-clock staleness*.
+    /// Call on a schedule (e.g. every minute from a background
+    /// task) — the pool mutation takes `&mut self` so the caller
+    /// owns the cadence.
+    ///
+    /// Bumps both the aggregate `rcf_tenant_evictions_total` counter
+    /// and the dedicated `rcf_tenant_idle_evictions_total` counter
+    /// so dashboards can distinguish pressure-driven churn from
+    /// retention-driven shedding.
+    pub fn evict_idle(&mut self, ttl: Duration) -> Vec<(K, ThresholdedForest<D>)> {
+        let now = Instant::now();
+        // Enumerate victims first so we do not iterate a map we
+        // are simultaneously mutating. Cheap — at most `capacity`
+        // entries, keyed on clone.
+        let victims: Vec<K> = self
+            .forests
+            .iter()
+            .filter_map(|(k, slot)| {
+                if now.saturating_duration_since(slot.last_access_instant) > ttl {
+                    Some(k.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut evicted = Vec::with_capacity(victims.len());
+        for key in victims {
+            if let Some(slot) = self.forests.remove(&key) {
+                self.metrics
+                    .inc_counter(crate::metrics::names::TENANT_EVICTIONS_TOTAL, 1);
+                self.metrics
+                    .inc_counter(crate::metrics::names::TENANT_IDLE_EVICTIONS_TOTAL, 1);
+                evicted.push((key, *slot.forest));
+            }
+        }
+        if !evicted.is_empty() {
+            self.emit_resident_gauge();
+        }
+        evicted
+    }
+
     /// Bump the monotonic access counter and return the new value.
     fn bump_access(&mut self) -> u64 {
         self.access_counter = self.access_counter.saturating_add(1);
@@ -775,6 +835,7 @@ where
     /// when the pool is full.
     fn touch_or_create(&mut self, key: &K) -> RcfResult<&mut ThresholdedForest<D>> {
         let tick = self.bump_access();
+        let now = Instant::now();
         if !self.forests.contains_key(key) {
             if self.forests.len() >= self.capacity {
                 self.evict_lru();
@@ -785,6 +846,7 @@ where
                 TenantSlot {
                     forest: Box::new(forest),
                     last_access: tick,
+                    last_access_instant: now,
                 },
             );
             self.metrics
@@ -795,6 +857,7 @@ where
         // return a mutable handle.
         let slot = self.forests.get_mut(key).expect("tenant was just inserted");
         slot.last_access = tick;
+        slot.last_access_instant = now;
         Ok(slot.forest.as_mut())
     }
 }
@@ -946,6 +1009,41 @@ mod tests {
     fn evict_lru_on_empty_pool_returns_none() {
         let mut p = TenantForestPool::<&'static str, 2>::new(4, factory_2d()).unwrap();
         assert!(p.evict_lru().is_none());
+    }
+
+    #[test]
+    fn evict_idle_retains_fresh_and_evicts_stale() {
+        let mut p = TenantForestPool::<&'static str, 2>::new(4, factory_2d()).unwrap();
+        p.process(&"a", [0.0, 0.0]).unwrap();
+        p.process(&"b", [1.0, 1.0]).unwrap();
+        // Sleep just long enough to make `a` and `b` older than the
+        // TTL; then touch `a` so only `b` crosses the threshold.
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        p.process(&"a", [0.1, 0.1]).unwrap();
+        let evicted = p.evict_idle(std::time::Duration::from_millis(20));
+        let evicted_keys: Vec<&&str> = evicted.iter().map(|(k, _)| k).collect();
+        assert_eq!(evicted_keys, vec![&"b"]);
+        assert!(p.contains(&"a"));
+        assert!(!p.contains(&"b"));
+    }
+
+    #[test]
+    fn evict_idle_empty_pool_returns_empty() {
+        let mut p = TenantForestPool::<&'static str, 2>::new(4, factory_2d()).unwrap();
+        let evicted = p.evict_idle(std::time::Duration::from_secs(1));
+        assert!(evicted.is_empty());
+    }
+
+    #[test]
+    fn evict_idle_zero_ttl_evicts_all_non_just_touched() {
+        let mut p = TenantForestPool::<&'static str, 2>::new(4, factory_2d()).unwrap();
+        p.process(&"a", [0.0, 0.0]).unwrap();
+        p.process(&"b", [1.0, 1.0]).unwrap();
+        // Small sleep so `now` advances past the per-slot instants.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let evicted = p.evict_idle(std::time::Duration::from_millis(0));
+        assert_eq!(evicted.len(), 2);
+        assert!(p.is_empty());
     }
 
     #[test]

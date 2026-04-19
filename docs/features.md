@@ -49,7 +49,15 @@ tenant A does not affect tenant B's adaptive threshold. Std-only.
 
 API: `process`, `score_only`, `attribution`, `peek`, `get`,
 `get_mut`, `insert`, `remove`, `clear`, `iter`, `iter_mut`,
-`tenants`, `evict_lru`.
+`tenants`, `evict_lru`, `evict_idle`.
+
+`evict_lru` sheds on capacity pressure (replace oldest when full).
+`evict_idle(ttl)` sheds on wall-clock staleness (evict every tenant
+whose last access is older than `ttl`) — intended for SaaS / MSSP
+with thousands of intermittent tenants where LRU alone would
+preserve dormant entries. Orthogonal paths; both emit
+`rcf_tenant_evictions_total`, TTL path also emits
+`rcf_tenant_idle_evictions_total`.
 
 Source: `src/pool/`.
 
@@ -298,7 +306,8 @@ Canonical metric names (`metrics::names::*`):
 | counter | `rcf_drift_fires_total` | aggregate CUSUM fire (up + down) |
 | counter | `rcf_drift_up_total` | CUSUM upward drift fires |
 | counter | `rcf_drift_down_total` | CUSUM downward drift fires |
-| counter | `rcf_tenant_evictions_total` | pool LRU eviction |
+| counter | `rcf_tenant_evictions_total` | pool eviction (LRU + TTL, aggregate) |
+| counter | `rcf_tenant_idle_evictions_total` | TTL-driven eviction subset |
 | counter | `rcf_tenant_created_total` | pool factory invocation (fresh tenant) |
 | counter | `rcf_bootstrap_points_total` | bootstrap-ingested points |
 | counter | `rcf_bootstrap_skipped_total` | bootstrap points skipped (non-finite) |
