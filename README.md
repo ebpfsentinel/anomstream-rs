@@ -14,7 +14,10 @@ port. Feature additions are driven by what eBPFsentinel Enterprise
 needs from its ML layer (streaming network anomaly detection, SOC
 triage, multi-tenant deployments) — not by AWS parity. Features
 well outside that scope (density estimation, forecasting,
-imputation, shingling, …) are intentionally absent.
+shingling, GLAD variant, near-neighbour list, …) are intentionally
+absent; the imputation concept is repurposed as a SOC-triage
+`forensic_baseline` helper rather than a feature-completion
+`impute()` call.
 
 See [docs/features.md](docs/features.md) for the catalogue of
 optional modules on top of the bare forest (TRCF, tenant pool,
