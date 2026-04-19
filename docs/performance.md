@@ -164,13 +164,13 @@ Same embedding pipeline (32-lag → warm-phase z-score → EMA
 
 | File | rcf-rs `score()` | rcf-rs `score_codisp()` | rrcf | AWS Java |
 |---|---|---|---|---|
-| `ambient_temperature_system_failure` | 0.813 | 0.813 | 0.734 | 0.786 |
-| `cpu_utilization_asg_misconfiguration` | 0.953 | 0.939 | 0.849 | 0.906 |
-| `ec2_request_latency_system_failure` | 0.709 | 0.739 | 0.481 | 0.482 |
-| `machine_temperature_system_failure` | 0.578 | 0.666 | 0.880 | 0.883 |
-| `nyc_taxi` | 0.698 | 0.721 | 0.571 | 0.540 |
-| `rogue_agent_key_hold` | 0.145 | 0.692 | 0.535 | 0.633 |
-| `rogue_agent_key_updown` | 0.633 | 0.721 | 0.657 | 0.542 |
+| `ambient_temperature_system_failure` | 0.813 | **0.813** | 0.734 | 0.786 |
+| `cpu_utilization_asg_misconfiguration` | **0.953** | 0.939 | 0.849 | 0.906 |
+| `ec2_request_latency_system_failure` | 0.709 | **0.739** | 0.481 | 0.482 |
+| `machine_temperature_system_failure` | 0.578 | 0.666 | 0.880 | **0.883** |
+| `nyc_taxi` | 0.698 | **0.721** | 0.571 | 0.540 |
+| `rogue_agent_key_hold` | 0.145 | **0.692** | 0.535 | 0.633 |
+| `rogue_agent_key_updown` | 0.633 | **0.721** | 0.657 | 0.542 |
 | **weighted aggregate** | 0.719 | **0.776** | 0.748 | 0.757 |
 
 ### Hyperparameter ablation
