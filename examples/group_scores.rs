@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Score decomposition by named feature groups.
 //!
 //! Instead of a single scalar + a 14-entry per-dim attribution,

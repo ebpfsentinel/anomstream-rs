@@ -14,6 +14,12 @@ categories = ["algorithms", "science", "data-structures"]
 [lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+unreachable = "warn"
 
 [lints.rust]
 missing_docs = "warn"
@@ -54,3 +60,6 @@ harness = false
 [[bench]]
 name = "extended"
 harness = false
+
+[profile.release]
+overflow-checks = true

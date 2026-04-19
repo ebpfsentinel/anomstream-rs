@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! End-to-end behaviour of the retraction API on
 //! [`rcf_rs::RandomCutForest`], [`rcf_rs::ThresholdedForest`] and
 //! [`rcf_rs::TenantForestPool`].

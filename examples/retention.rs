@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Timestamp + retention: stream 1000 observations tagged with
 //! unix-epoch-like `u64` timestamps, then prune every point older
 //! than a cutoff. GDPR / NIS2 / forensic-retention pattern.

@@ -104,7 +104,7 @@ impl TestSink {
     /// test-only concern.
     #[must_use]
     pub fn snapshot(&self) -> TestSinkInner {
-        self.inner.lock().unwrap().clone()
+        self.lock_inner().clone()
     }
 
     /// Counter total for `name`, `0` when unseen.
@@ -114,7 +114,7 @@ impl TestSink {
     /// Panics if the internal lock is poisoned.
     #[must_use]
     pub fn counter(&self, name: &str) -> u64 {
-        *self.inner.lock().unwrap().counters.get(name).unwrap_or(&0)
+        *self.lock_inner().counters.get(name).unwrap_or(&0)
     }
 
     /// Latest gauge value for `name`, `None` when unseen.
@@ -124,7 +124,7 @@ impl TestSink {
     /// Panics if the internal lock is poisoned.
     #[must_use]
     pub fn gauge(&self, name: &str) -> Option<f64> {
-        self.inner.lock().unwrap().gauges.get(name).copied()
+        self.lock_inner().gauges.get(name).copied()
     }
 
     /// Histogram observations for `name`, cloned.
@@ -134,20 +134,28 @@ impl TestSink {
     /// Panics if the internal lock is poisoned.
     #[must_use]
     pub fn histogram(&self, name: &str) -> Vec<f64> {
-        self.inner
-            .lock()
-            .unwrap()
+        self.lock_inner()
             .histograms
             .get(name)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Shared helper — acquires the inner guard and surfaces poison
+    /// with an explicit message instead of an opaque `unwrap`.
+    /// Poison can only happen if another thread panicked while the
+    /// lock was held; callers already document this in `# Panics`.
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, TestSinkInner> {
+        self.inner
+            .lock()
+            .expect("TestSink mutex poisoned — another thread panicked holding it")
     }
 }
 
 #[cfg(feature = "std")]
 impl MetricsSink for TestSink {
     fn inc_counter(&self, name: &str, value: u64) {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.lock_inner();
         *guard.counters.entry(name.to_string()).or_insert(0) = guard
             .counters
             .get(name)
@@ -156,11 +164,11 @@ impl MetricsSink for TestSink {
             .saturating_add(value);
     }
     fn set_gauge(&self, name: &str, value: f64) {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.lock_inner();
         guard.gauges.insert(name.to_string(), value);
     }
     fn observe_histogram(&self, name: &str, value: f64) {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.lock_inner();
         guard
             .histograms
             .entry(name.to_string())

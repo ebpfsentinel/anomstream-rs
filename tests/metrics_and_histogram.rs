@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! End-to-end tests for the observability surface:
 //!
 //! - [`rcf_rs::MetricsSink`] receives the documented events from

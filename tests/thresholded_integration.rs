@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! End-to-end behaviour of the adaptive threshold layer.
 //!
 //! Asserts four properties that callers rely on:

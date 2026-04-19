@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Cold-start bootstrap from a simulated TSDB query.
 //!
 //! Mimics the restart path of a long-running streaming agent: pull

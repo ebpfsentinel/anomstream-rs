@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Streaming anomaly detection with an adaptive threshold.
 //!
 //! Runs a tight noisy baseline through the detector, then two plants

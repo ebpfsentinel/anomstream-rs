@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Two additions in one demo: explicit-point retraction via
 //! `update_indexed` / `delete`, and per-dim `feature_scales` to
 //! rebalance dims with wildly different dynamic ranges.

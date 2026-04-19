@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Demonstrates pinning [`mimalloc`] as the global allocator —
 //! a one-line change in the caller's `main.rs` that frees a few
 //! per cent on every `update`/`score` (most visible on

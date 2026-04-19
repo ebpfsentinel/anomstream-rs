@@ -99,6 +99,11 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
+// The crate-level restriction deny on `unwrap_used` / `panic` keeps
+// the public prod paths free of panic-on-unwrap; unit tests inside
+// `#[cfg(test)]` modules use `.unwrap()` and explicit `panic!` as
+// fail-fast idioms and opt out here.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::panic))]
 
 pub mod attribution_stability;
 pub mod bootstrap;

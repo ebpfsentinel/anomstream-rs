@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! CUSUM meta-drift chained onto a thresholded forest's anomaly
 //! score stream.
 //!

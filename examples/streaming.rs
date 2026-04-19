@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Read CSV rows from stdin, score each one through the forest, and
 //! print `score,is_anomaly`. The forest is pre-trained from the
 //! first `WARMUP` rows of the stream so the score reflects deviation

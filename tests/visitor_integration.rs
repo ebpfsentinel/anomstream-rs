@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! End-to-end integration tests for the RCF visitors against a
 //! real [`RandomCutTree`].
 //!

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Property-based / fuzz-style tests.
 //!
 //! Exercises every public entry point against adversarial inputs

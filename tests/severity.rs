@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Severity bands end-to-end — pipe a trained thresholded forest's
 //! verdicts through [`rcf_rs::SeverityBands`] and check classification.
 //!

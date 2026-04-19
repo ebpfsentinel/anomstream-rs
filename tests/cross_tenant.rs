@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Cross-tenant what-if scoring end-to-end.
 //!
 //! Asserts:

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! End-to-end persistence roundtrip tests for [`rcf_rs::RandomCutForest`].
 //!
 //! Bit-exact score roundtrip for binary + JSON, version-mismatch

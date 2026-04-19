@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Warm-reload end-to-end tests covering
 //! [`rcf_rs::RandomCutForest`] and [`rcf_rs::ThresholdedForest`]
 //! persisted to disk and resumed later.

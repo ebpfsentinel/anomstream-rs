@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Operator-facing observability: wire a `MetricsSink` into every
 //! detector layer and plot a `ScoreHistogram` at the end.
 //!

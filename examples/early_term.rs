@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Compare the latency and fidelity of `score` vs
 //! `score_early_term` on a warmed forest. Runs 1000 probes through
 //! each and reports the savings.

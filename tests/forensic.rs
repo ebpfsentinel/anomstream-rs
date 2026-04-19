@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! End-to-end behaviour of imputation-like forensic baseline.
 //!
 //! Asserts:

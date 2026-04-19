@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Behaviour of the warmup admission gate (`initial_accept_fraction`).
 //!
 //! Three properties the forest-level wiring must preserve:

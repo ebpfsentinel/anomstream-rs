@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Per-tenant detector pool: each tenant owns its own adaptive
 //! threshold, drift, and reservoir. A shock on tenant `alice` does
 //! not move the baseline of tenant `bob`.

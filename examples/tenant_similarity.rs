@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Tenant similarity index — identify tenants whose TRCF score
 //! distributions overlap. Useful for `SaaS` deployments with many
 //! tenants: group similar ones for tiered alerting policies or

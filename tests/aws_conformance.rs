@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! AWS `SageMaker` Random Cut Forest conformance suite.
 //!
 //! Asserts every documented invariant of the AWS `SageMaker` RCF

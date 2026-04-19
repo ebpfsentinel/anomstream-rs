@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Bulk scoring on a warmed forest — compare serial
 //! `for p in points { f.score(p) }` vs `f.score_many(&points)`.
 //! The bulk path parallelises across points on top of rayon's

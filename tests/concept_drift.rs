@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Concept-drift integration test for [`rcf_rs::RandomCutForest`].
 //!
 //! A stream that switches from cluster A to cluster B should

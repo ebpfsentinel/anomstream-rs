@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! End-to-end Platt calibration on a warmed thresholded forest.
 //!
 //! Asserts:

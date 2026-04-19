@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Severity bands — classify raw anomaly scores into
 //! Normal/Low/Medium/High/Critical ordinal labels. Defaults match
 //! eBPFsentinel Enterprise ml-detection (2/3/4/5).

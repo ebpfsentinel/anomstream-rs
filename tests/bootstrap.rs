@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Cold-start bootstrap end-to-end tests.
 //!
 //! Asserts:

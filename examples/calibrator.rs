@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Fit a Platt sigmoid on a labelled calibration set, then map
 //! fresh forest scores to `P(anomaly | score) ∈ [0, 1]` — the
 //! audit-friendly output for SOC2 / NIS2 paperwork.

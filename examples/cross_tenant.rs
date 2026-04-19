@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Cross-tenant what-if — score the SAME point against every
 //! resident tenant's detector. MSSP threat-intel pattern: a suspect
 //! IOC lands in tenant A, we want to know which other tenants'

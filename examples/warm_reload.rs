@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Warm reload: checkpoint the detector to disk, then resume across
 //! restarts without paying the cold-start warmup twice.
 //!

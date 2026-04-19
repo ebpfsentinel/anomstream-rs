@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
 //! Print the top-3 contributing dimensions of the anomaly score for
 //! a queried point. Demonstrates [`rcf_rs::RandomCutForest::attribution`]
 //! and the [`rcf_rs::DiVector::argmax`] helper.
