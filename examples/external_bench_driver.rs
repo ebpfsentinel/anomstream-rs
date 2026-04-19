@@ -1,9 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::similar_names)]
-//! rcf-rs side of the external-bench comparison — reads the CSV
-//! emitted by `scripts/external-bench/gen_points.py`, warms a
+//! rcf-rs side of the synthetic-corpus bench — reads the CSV
+//! emitted by `scripts/synthetic/gen_points.py`, warms a
 //! forest, then reports inserts/s, scores/s, and `AUC` against
 //! the first-column label. Matches the metric shape of
-//! `bench_rrcf.py` / `bench_sklearn_iforest.py` so the numbers sit
+//! `bench_rrcf_synthetic.py` / `bench_sklearn_synthetic.py` so the numbers sit
 //! side by side in `docs/performance.md`.
 //!
 //! Deliberately `D = 16` (AWS-default) — regenerate the CSV with

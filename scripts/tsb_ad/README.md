@@ -76,16 +76,16 @@ three implementations land in the same AUC table:
 # `getAnomalyScore()` is codisp-like — directly comparable to
 # rcf-rs's `score_codisp()`. Runtime: ~10 min on reference host.
 javac -cp /tmp/aws-rcf-central/randomcutforest-core-4.4.0.jar \
-    scripts/tsb_ad/RcfBenchTsbAdM.java
+    scripts/tsb_ad/RcfBenchTsbAd.java
 java -cp scripts/tsb_ad:/tmp/aws-rcf-central/randomcutforest-core-4.4.0.jar \
-    RcfBenchTsbAdM /tmp/tsb-ad/TSB-AD-M 50000
+    RcfBenchTsbAd /tmp/tsb-ad/TSB-AD-M 50000
 
 # rrcf — `codisp()` is the only API, insert+walk+forget per
 # probe. Parallelise across files (GIL bypass via multiprocessing)
 # but wall-time still runs ~3–4 h at 14 workers / max-eval 1500
 # on the full corpus; provided for reproducibility, not in the
 # performance tables.
-python3 scripts/tsb_ad/bench_rrcf_tsb_ad_m.py \
+python3 scripts/tsb_ad/bench_rrcf_tsb_ad.py \
     --dir /tmp/tsb-ad/TSB-AD-M --max-eval 1500 --workers "$(nproc)"
 ```
 

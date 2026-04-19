@@ -9,7 +9,7 @@ published reference implementations:
   — not RCF, but the canonical streaming-friendly tree-isolation
   baseline every comparison pins against.
 - AWS's [`randomcutforest-java`](https://github.com/aws/random-cut-forest-by-aws)
-  4.4.0 — JVM reference. See `README-aws-java.md`.
+  4.4.0 — JVM reference. See `../README.md`.
 
 Scripts live outside the Rust crate by design — they pull in
 Python / JVM toolchains, aren't CI-green, and produce numbers
@@ -20,11 +20,11 @@ that are only meaningful on the dev box they run on.
 - `gen_points.py` — deterministic CSV generator shared by every
   runner. First `n_normal` rows are clean (warm-up), last
   `n_outliers` rows are the anomaly probes.
-- `bench_rrcf.py` — rrcf warm + `codisp` score loop.
-- `bench_sklearn_iforest.py` — sklearn `IsolationForest` fit +
+- `bench_rrcf_synthetic.py` — rrcf warm + `codisp` score loop.
+- `bench_sklearn_synthetic.py` — sklearn `IsolationForest` fit +
   `decision_function`.
-- `java-driver/RcfBench.java` — AWS Java driver; see
-  `README-aws-java.md` for the Maven Central jar path.
+- `RcfBenchSynthetic.java` — AWS Java driver; see
+  `../README.md` for the Maven Central jar path.
 
 The rcf-rs side is an ordinary crate example:
 `examples/external_bench_driver.rs` — invoked via `cargo run`.
@@ -36,24 +36,24 @@ with `rrcf` and `scikit-learn` installed:
 
 ```bash
 # Shared dataset: 10 000 pts, D=16, seed 2026, 1 % outliers.
-python3 scripts/external-bench/gen_points.py \
+python3 scripts/synthetic/gen_points.py \
     --n 10000 --dim 16 --seed 2026 > data.csv
 
 # Python baselines.
 pip install --user rrcf scikit-learn numpy
-python3 scripts/external-bench/bench_rrcf.py \
+python3 scripts/synthetic/bench_rrcf_synthetic.py \
     --input data.csv --trees 100 --sample 256
-python3 scripts/external-bench/bench_sklearn_iforest.py \
+python3 scripts/synthetic/bench_sklearn_synthetic.py \
     --input data.csv --trees 100 --train-frac 0.3
 
 # rcf-rs.
 cargo run --release --example external_bench_driver -- \
     data.csv 100 256
 
-# AWS Java (see README-aws-java.md for the jar).
+# AWS Java (see ../README.md for the jar).
 JAR=/tmp/aws-rcf/randomcutforest-core-4.4.0.jar
-javac -cp "$JAR" scripts/external-bench/java-driver/RcfBench.java
-java -cp "scripts/external-bench/java-driver:$JAR" RcfBench \
+javac -cp "$JAR" scripts/synthetic/RcfBenchSynthetic.java
+java -cp "scripts/synthetic:$JAR" RcfBenchSynthetic \
     data.csv 100 256
 ```
 

@@ -12,7 +12,7 @@ to preserve the baseline.
 
 Usage:
     scripts/tsb_ad/fetch.sh /tmp/tsb-ad
-    python3 scripts/tsb_ad/bench_rrcf_tsb_ad_m.py \
+    python3 scripts/tsb_ad/bench_rrcf_tsb_ad.py \
         --dir /tmp/tsb-ad/TSB-AD-M
 """
 

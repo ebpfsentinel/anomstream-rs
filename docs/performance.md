@@ -141,7 +141,7 @@ run. The **ratios are portable, the absolute numbers aren't**.
 Reproduce the sweep:
 
 ```bash
-scripts/external-bench/variance_sweep.sh /tmp/aws-rcf/randomcutforest-core-4.4.0.jar
+scripts/synthetic/variance_sweep.sh /tmp/aws-rcf/randomcutforest-core-4.4.0.jar
 ```
 
 ## Detection quality — NAB `realKnownCause`
@@ -231,7 +231,7 @@ Reproduce:
 git clone --depth 1 https://github.com/numenta/NAB.git /opt/nab
 RCF_NAB_PATH=/opt/nab cargo test --test nab --all-features -- --ignored --nocapture
 python3 scripts/nab/bench_rrcf_nab.py --nab /opt/nab
-java -cp ".:/tmp/aws-rcf/randomcutforest-core-4.4.0.jar" RcfBenchNab /opt/nab
+java -cp "scripts/nab:/tmp/aws-rcf/randomcutforest-core-4.4.0.jar" RcfBenchNab /opt/nab
 ```
 
 ## Detection quality — TSB-AD-M (multivariate)
@@ -248,7 +248,7 @@ are skipped. Runtime: ~12 min on the reference hardware.
 Per-dataset ROC-AUC (weighted by positive count) against
 `randomcutforest-java` 4.4.0 on the same corpus. rrcf 0.4.4 was
 benched with the same protocol
-(`scripts/tsb_ad/bench_rrcf_tsb_ad_m.py`, parallel across files)
+(`scripts/tsb_ad/bench_rrcf_tsb_ad.py`, parallel across files)
 but wall-time is prohibitive on the full corpus — ~3–4 h at
 14 workers / `--max-eval 1500`. Numbers are left for the reader
 to reproduce; the script is provided for reproducibility.
@@ -311,10 +311,10 @@ Reproduce:
 scripts/tsb_ad/fetch.sh /tmp/tsb-ad
 RCF_TSB_AD_M_PATH=/tmp/tsb-ad/TSB-AD-M \
     cargo test --release --test tsb_ad_m --all-features -- --ignored --nocapture
-python3 scripts/tsb_ad/bench_rrcf_tsb_ad_m.py \
+python3 scripts/tsb_ad/bench_rrcf_tsb_ad.py \
     --dir /tmp/tsb-ad/TSB-AD-M --max-eval 1500 --workers "$(nproc)"
 javac -cp /tmp/aws-rcf-central/randomcutforest-core-4.4.0.jar \
-    scripts/tsb_ad/RcfBenchTsbAdM.java
+    scripts/tsb_ad/RcfBenchTsbAd.java
 java -cp scripts/tsb_ad:/tmp/aws-rcf-central/randomcutforest-core-4.4.0.jar \
-    RcfBenchTsbAdM /tmp/tsb-ad/TSB-AD-M 50000
+    RcfBenchTsbAd /tmp/tsb-ad/TSB-AD-M 50000
 ```

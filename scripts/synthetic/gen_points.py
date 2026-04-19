@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Emit a deterministic CSV dataset of D-dim f64 points.
 
-Used as the shared input for every external-bench runner so the
+Used as the shared input for every synthetic-corpus bench runner so the
 comparison is on identical bytes.  Deterministic via a caller-
 supplied seed — NumPy's default RNG is bit-reproducible across
 platforms for the same seed.

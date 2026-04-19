@@ -7,7 +7,7 @@ for apples-to-apples comparison of speed + detection quality.
 
 Usage:
     pip install --user scikit-learn numpy
-    python3 bench_sklearn_iforest.py --input data.csv --trees 100
+    python3 bench_sklearn_synthetic.py --input data.csv --trees 100
 """
 
 import argparse

@@ -1,6 +1,6 @@
 // AWS randomcutforest-java on the NAB realKnownCause subset.
-// Same protocol as tests/nab.rs / bench_rrcf_nab.py: 8-lag
-// temporal embedding, 15 % warm fraction, frozen baseline.
+// Same protocol as tests/nab.rs / scripts/nab/bench_rrcf_nab.py:
+// 8-lag temporal embedding, 15 % warm fraction, frozen baseline.
 //
 // Usage:
 //   javac -cp /path/to/randomcutforest-core-4.4.0.jar RcfBenchNab.java

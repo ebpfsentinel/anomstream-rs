@@ -3,8 +3,8 @@
 // sklearn. Reads the same CSV shape as gen_points.py.
 //
 // Usage:
-//   javac -cp /path/to/randomcutforest-core-4.4.0.jar RcfBench.java
-//   java -cp .:/path/to/randomcutforest-core-4.4.0.jar RcfBench data.csv 100 256
+//   javac -cp /path/to/randomcutforest-core-4.4.0.jar RcfBenchSynthetic.java
+//   java -cp .:/path/to/randomcutforest-core-4.4.0.jar RcfBenchSynthetic data.csv 100 256
 
 import java.io.BufferedReader;
 import java.io.FileReader;
@@ -15,11 +15,11 @@ import java.util.List;
 
 import com.amazon.randomcutforest.RandomCutForest;
 
-public class RcfBench {
+public class RcfBenchSynthetic {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 3) {
-            System.err.println("usage: RcfBench <csv> <num_trees> <sample_size>");
+            System.err.println("usage: RcfBenchSynthetic <csv> <num_trees> <sample_size>");
             System.exit(2);
         }
         String csv = args[0];

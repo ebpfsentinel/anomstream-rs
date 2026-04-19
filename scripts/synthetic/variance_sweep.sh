@@ -15,7 +15,7 @@ tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
 for seed in "${SEEDS[@]}"; do
-    python3 scripts/external-bench/gen_points.py \
+    python3 scripts/synthetic/gen_points.py \
         --n 10000 --dim 16 --seed "$seed" > "$tmpdir/data-$seed.csv"
 done
 
@@ -27,13 +27,13 @@ run_rcf_rs() {
 
 run_rrcf() {
     local seed=$1
-    python3 scripts/external-bench/bench_rrcf.py \
+    python3 scripts/synthetic/bench_rrcf_synthetic.py \
         --input "$tmpdir/data-$seed.csv" --trees 100 --sample 256 2>&1 | tail -8
 }
 
 run_sklearn() {
     local seed=$1
-    python3 scripts/external-bench/bench_sklearn_iforest.py \
+    python3 scripts/synthetic/bench_sklearn_synthetic.py \
         --input "$tmpdir/data-$seed.csv" --trees 100 --train-frac 0.3 2>&1 | tail -8
 }
 
@@ -43,10 +43,10 @@ run_aws_java() {
         echo "  SKIP (jar not at $JAR)"
         return
     fi
-    if [[ ! -f scripts/external-bench/java-driver/RcfBench.class ]]; then
-        javac -cp "$JAR" scripts/external-bench/java-driver/RcfBench.java
+    if [[ ! -f scripts/synthetic/RcfBenchSynthetic.class ]]; then
+        javac -cp "$JAR" scripts/synthetic/RcfBenchSynthetic.java
     fi
-    java -cp "scripts/external-bench/java-driver:$JAR" RcfBench \
+    java -cp "scripts/synthetic:$JAR" RcfBenchSynthetic \
         "$tmpdir/data-$seed.csv" 100 256 2>&1 | tail -8
 }
 

@@ -5,9 +5,9 @@
 //
 // Usage:
 //   javac -cp /path/to/randomcutforest-core-4.4.0.jar \
-//       scripts/tsb_ad/RcfBenchTsbAdM.java
+//       scripts/tsb_ad/RcfBenchTsbAd.java
 //   java -cp scripts/tsb_ad:/path/to/...jar \
-//       RcfBenchTsbAdM /tmp/tsb-ad/TSB-AD-M
+//       RcfBenchTsbAd /tmp/tsb-ad/TSB-AD-M
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -22,7 +22,7 @@ import java.util.regex.Pattern;
 
 import com.amazon.randomcutforest.RandomCutForest;
 
-public class RcfBenchTsbAdM {
+public class RcfBenchTsbAd {
     static final int TREES = 100;
     static final int SAMPLE = 256;
     static final double SMOOTH_ALPHA = 0.02;
@@ -33,7 +33,7 @@ public class RcfBenchTsbAdM {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 1) {
-            System.err.println("usage: RcfBenchTsbAdM <tsb-ad-m-dir> [max-eval]");
+            System.err.println("usage: RcfBenchTsbAd <tsb-ad-m-dir> [max-eval]");
             System.exit(2);
         }
         File root = new File(args[0]);

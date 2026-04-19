@@ -9,7 +9,7 @@ side:
 - `tests/nab.rs` — `#[ignore]` integration test, rcf-rs side.
 - `bench_rrcf_nab.py` — rrcf 0.4.4.
 - `RcfBenchNab.java` — AWS `randomcutforest-java` 4.4.0 (see
-  `../external-bench/README-aws-java.md` for the Maven Central
+  `../README.md` for the Maven Central
   jar).
 
 ## Fetch the dataset

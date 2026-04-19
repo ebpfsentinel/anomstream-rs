@@ -13,7 +13,7 @@ per-op cost.
 
 Usage:
     pip install --user rrcf numpy
-    python3 bench_rrcf.py --input data.csv --trees 100 --sample 256
+    python3 bench_rrcf_synthetic.py --input data.csv --trees 100 --sample 256
 """
 
 import argparse
