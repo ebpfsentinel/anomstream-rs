@@ -30,13 +30,13 @@ Re-run on target hardware before committing SLO budgets.
 
 ## Measurement methodology caveats
 
-- **Bench-group variance**: the same `(trees, samples, D)` tuple
-  appears in the `forest_update` core-ops table *and* in the
-  `forest_tuning_dim16` sweep. Absolute numbers across groups
-  differ by up to ~50 % (32.36 µs vs 47.32 µs at `(100, 256, 16)`
-  — both identical code paths). Cause: the laptop-class i7-1370P
-  boosts on the first bench group then thermally de-clocks over
-  the ~5-minute run. Compare *within* a group, not across.
+- **Cross-group variance**: do not compare absolute numbers across
+  benches that run at different points of the `cargo bench` run.
+  Each bench function mutates a persistent forest through its
+  `b.iter()` body, and criterion chooses batch sizes based on
+  per-op cost — so the reservoir state + per-iter overhead drift
+  between groups. Trust *ratios* inside a group; suspect
+  cross-group comparisons.
 - **Parallel ceiling**: `score_many` plateaus at ~6× speedup on
   a 14-core host. Per-point work is memory-bandwidth-bound once
   the cache working set exceeds L3; more cores do not help past
@@ -73,19 +73,6 @@ Re-run on target hardware before committing SLO budgets.
 
 At `(100, 256, 16)`: ~31k inserts/s and ~39k scores/s
 single-thread-equivalent.
-
-## Tuning sweep at `D = 16`
-
-`forest_tuning_dim16` bench group:
-
-| `(num_trees, sample_size)` | `update` | `score` |
-|---|---|---|
-| `(50, 64)` | 35.33 µs | 25.59 µs |
-| `(50, 128)` | 38.56 µs | 18.93 µs |
-| `(50, 256)` | 29.36 µs | 19.51 µs |
-| `(100, 64)` | 27.56 µs | 23.09 µs |
-| `(100, 128)` | 42.09 µs | 34.00 µs |
-| `(100, 256)` | 47.32 µs | 25.53 µs |
 
 ## Bulk batch scoring
 
