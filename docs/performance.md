@@ -12,6 +12,47 @@ Quick run with smaller sample: `cargo bench -- --sample-size 10
 --warm-up-time 1 --measurement-time 2`. Full run (default
 criterion config): `cargo bench`.
 
+## Reference hardware
+
+The numbers below were captured on:
+
+- **CPU**: Intel Core i7-1370P (13th gen) —
+  14 cores / 20 threads, L3 = 24 MiB
+- **Memory**: 32 GB DDR5
+- **Kernel**: Linux 6.17
+- **Allocator**: mimalloc 0.1 pinned globally in the bench harness
+- **Compiler**: rustc 1.95 stable
+
+Absolute numbers scale with CPU generation / frequency /
+memory-bandwidth — the *ratios* between ops (parallel speedup,
+early-term savings, tenant-count scaling) are the portable signal.
+Re-run on target hardware before committing SLO budgets.
+
+## Measurement methodology caveats
+
+- **Bench-group variance**: the same `(trees, samples, D)` tuple
+  appears in the `forest_update` core-ops table *and* in the
+  `forest_tuning_dim16` sweep. Absolute numbers across groups
+  differ by up to ~50 % (32.36 µs vs 47.32 µs at `(100, 256, 16)`
+  — both identical code paths). Cause: the laptop-class i7-1370P
+  boosts on the first bench group then thermally de-clocks over
+  the ~5-minute run. Compare *within* a group, not across.
+- **Parallel ceiling**: `score_many` plateaus at ~6× speedup on
+  a 14-core host. Per-point work is memory-bandwidth-bound once
+  the cache working set exceeds L3; more cores do not help past
+  that point. Known target for future arena-layout work.
+- **No external comparison yet**: no side-by-side vs AWS's
+  `randomcutforest-java`, `rrcf` (Python), or Isolation Forest
+  baselines. Tracked under future work.
+- **No external-dataset detection-quality measurement here**: this
+  file measures speed. Detection quality on public corpora
+  (`NAB` / Yahoo S5 / Numenta) is not covered; see Future work.
+  `tests/detection_quality.rs` does report **AUC**, **score
+  separation ratio**, and **precision / recall at top-K** on
+  synthetic ground-truth streams (cluster + outliers, transition
+  anomalies) — regression-guards the core quality claim and pins
+  AUC > 0.95 on separable data, > 0.90 on transition data.
+
 ## Core ops (`forest_throughput`)
 
 | Workload | `(trees, samples, D)` | Time |
@@ -113,3 +154,26 @@ Observations:
 - `most_similar_top5` is `O(N · log top_n)` via bounded
   `BinaryHeap`; N=32→512 gives ~13× for 16× more tenants —
   sub-linear because the fixed-size heap caps per-iter work.
+
+## Future work
+
+- **External baselines** — run the same matrix against AWS's
+  `randomcutforest-java` on identical points, `rrcf` Python
+  (Numpy-backed), and scikit-learn's `IsolationForest` to pin
+  where rcf-rs sits in absolute throughput terms.
+- **Detection-quality benchmarks** — integrate the Numenta NAB
+  dataset, Yahoo S5, and Wikipedia pageviews; report per-corpus
+  AUC + precision/recall at fixed operating points. A speed-only
+  number says nothing about whether the forest actually catches
+  the anomalies.
+- **Arena-layout hot-path work** — per-tree node arenas are
+  currently `Vec<Node>` dispatched via `NodeRef` indices. A
+  DFS-packed layout (parent-before-children, `u16` deltas when
+  the subtree fits) would halve the memory bandwidth required by
+  `score` / `attribution` and lift the `~6×` parallel ceiling.
+- **No-alloc scoring** — `score_many` builds one intermediate
+  `Vec<AnomalyScore>`; a callback-based variant would cut the
+  allocation on tight hot paths.
+- **AVX-512 for `D=64`** — the bounding-box `range_sum` already
+  uses `wide::f64x4`; `f64x8` on AVX-512 hosts would help at
+  large `D`.
