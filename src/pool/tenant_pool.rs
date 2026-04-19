@@ -994,8 +994,8 @@ mod tests {
         // d skipped (not ready).
         assert!(out.iter().all(|(k, _)| *k != "d"));
         // Sorted desc.
-        for pair in out.windows(2) {
-            assert!(pair[0].1.grade() >= pair[1].1.grade());
+        for [a, b] in out.array_windows::<2>() {
+            assert!(a.1.grade() >= b.1.grade());
         }
     }
 

@@ -77,8 +77,8 @@ fn most_similar_sorted_descending() {
         }
     }
     let ranked = pool.most_similar(&"a", 10, 4);
-    for pair in ranked.windows(2) {
-        assert!(pair[0].1 >= pair[1].1, "not sorted desc");
+    for [a, b] in ranked.array_windows::<2>() {
+        assert!(a.1 >= b.1, "not sorted desc");
     }
 }
 

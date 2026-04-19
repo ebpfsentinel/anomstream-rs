@@ -411,8 +411,8 @@ mod tests {
         let scores = vec![0.0_f64, 1.0, 2.0, 3.0];
         let out = cal.calibrate_many(&scores);
         assert_eq!(out.len(), 4);
-        for pair in out.windows(2) {
-            assert!(pair[0] <= pair[1]);
+        for &[a, b] in out.array_windows::<2>() {
+            assert!(a <= b);
         }
     }
 

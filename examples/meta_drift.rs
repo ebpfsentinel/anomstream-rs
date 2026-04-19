@@ -88,7 +88,7 @@ fn main() -> Result<(), RcfError> {
         let drift = meta.observe(f64::from(verdict.score()));
         if matches!(drift.drift, Some(DriftKind::Upward)) {
             fire_window = Some(i);
-            println!("  CUSUM fired Upward after {n} shifted windows", n = i + 1,);
+            println!("  CUSUM fired Upward after {n} shifted windows", n = i + 1);
             println!(
                 "  s_high = {:.4}, threshold = {:.4}",
                 drift.s_high, drift.threshold

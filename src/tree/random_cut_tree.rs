@@ -990,7 +990,7 @@ mod tests {
         t.add(1, &p1, &points, &mut rng).unwrap();
         let v = PathRecorder::new();
         let (depths, leaf_idx) = t.traverse(&p1, v).unwrap();
-        assert!(depths.windows(2).all(|w| w[0] < w[1]));
+        assert!(depths.array_windows::<2>().all(|[a, b]| a < b));
         assert!(leaf_idx == Some(0) || leaf_idx == Some(1));
     }
 

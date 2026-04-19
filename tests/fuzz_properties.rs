@@ -222,8 +222,8 @@ proptest! {
             }
         }
         let ranked = pool.score_across_tenants(&probe).expect("cross-tenant");
-        for pair in ranked.windows(2) {
-            prop_assert!(pair[0].1.grade() >= pair[1].1.grade());
+        for [a, b] in ranked.array_windows::<2>() {
+            prop_assert!(a.1.grade() >= b.1.grade());
         }
     }
 

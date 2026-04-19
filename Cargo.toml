@@ -1,13 +1,12 @@
 [package]
 name = "rcf-rs"
-version = "0.1.0-dev"
+version = "0.0.0-dev"
 edition = "2024"
-rust-version = "1.93"
+rust-version = "1.95"
 license = "Apache-2.0"
-description = "Pure Rust Random Cut Forest for streaming anomaly detection (Guha et al., ICML 2016)"
+description = "Pure Rust Random Cut Forest for streaming anomaly detection"
 repository = "https://github.com/maximewewer/rcf-rs"
 homepage = "https://github.com/maximewewer/rcf-rs"
-documentation = "https://docs.rs/rcf-rs"
 readme = "README.md"
 keywords = ["anomaly-detection", "streaming", "random-cut-forest", "outlier", "ml"]
 categories = ["algorithms", "science", "data-structures"]
@@ -25,9 +24,6 @@ default = ["std", "parallel", "serde", "postcard"]
 std = []
 serde = ["dep:serde", "rand_chacha/serde"]
 serde_json = ["dep:serde_json", "serde"]
-# Compact binary persistence via `postcard` — the `bincode` crate was
-# marked unmaintained by RustSec in 2025, `postcard` is the natural
-# drop-in replacement (pure serde, varint-compact, still maintained).
 postcard = ["dep:postcard", "serde"]
 parallel = ["dep:rayon"]
 

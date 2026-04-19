@@ -100,7 +100,7 @@ mod point_slots_serde {
                 None => Ok(None),
                 Some(v) => {
                     let arr: [f64; D] = v.try_into().map_err(|_v: Vec<f64>| {
-                        D2::Error::custom(format!("PointStore slot length mismatch: expected {D}",))
+                        D2::Error::custom(format!("PointStore slot length mismatch: expected {D}"))
                     })?;
                     Ok(Some(arr))
                 }
