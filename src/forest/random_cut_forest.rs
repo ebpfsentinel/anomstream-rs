@@ -847,6 +847,34 @@ impl<const D: usize> RandomCutForest<D> {
         }
     }
 
+    /// No-alloc bulk scoring — invoke `on_score(index, score)` for
+    /// every probe in order instead of collecting a `Vec`. Avoids
+    /// the intermediate allocation on hot paths where the caller
+    /// streams results directly into a writer, histogram, or alert
+    /// pipeline.
+    ///
+    /// Runs serially on purpose — the callback is invoked from the
+    /// caller's thread in input order, so `Fn(usize, AnomalyScore)`
+    /// does not need to be `Send + Sync`. For parallel batch work
+    /// where the order / thread-affinity does not matter, keep
+    /// using [`Self::score_many`].
+    ///
+    /// # Errors
+    ///
+    /// Aborts on the first [`Self::score`] error; earlier callback
+    /// invocations are preserved (caller-visible side effects up to
+    /// that point are final).
+    pub fn score_many_with<F>(&self, points: &[[f64; D]], mut on_score: F) -> RcfResult<()>
+    where
+        F: FnMut(usize, AnomalyScore),
+    {
+        for (i, p) in points.iter().enumerate() {
+            let s = self.score(p)?;
+            on_score(i, s);
+        }
+        Ok(())
+    }
+
     /// Bulk early-termination scoring — same batch semantics as
     /// [`Self::score_many`] but each point goes through the
     /// sequential-per-tree short-circuit path. Best pick when the

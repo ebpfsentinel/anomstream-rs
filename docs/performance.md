@@ -144,23 +144,33 @@ Observations:
 
 ## Future work
 
-- **External baselines** — run the same matrix against AWS's
-  `randomcutforest-java` on identical points, `rrcf` Python
-  (Numpy-backed), and scikit-learn's `IsolationForest` to pin
-  where rcf-rs sits in absolute throughput terms.
-- **Detection-quality benchmarks** — integrate the Numenta NAB
-  dataset, Yahoo S5, and Wikipedia pageviews; report per-corpus
-  AUC + precision/recall at fixed operating points. A speed-only
-  number says nothing about whether the forest actually catches
-  the anomalies.
+- **External baselines** — scaffolding shipped under
+  `scripts/external-bench/` (deterministic CSV generator, `rrcf`
+  + scikit-learn `IsolationForest` Python runners, `rcf-rs`
+  driver via the `external_bench_driver` example, AWS Java
+  outline). Run manually on the dev box, paste results back into
+  this file. Python + JVM toolchains are out-of-CI on purpose.
+- **Detection-quality benchmarks on public corpora** — `NAB` /
+  Yahoo S5 / Wikipedia pageviews not yet integrated.
+  `tests/detection_quality.rs` covers synthetic ground-truth
+  streams; public-corpus AUC pinning is the next step but needs
+  dataset-fetch infra that is heavier than the crate scope.
 - **Arena-layout hot-path work** — per-tree node arenas are
   currently `Vec<Node>` dispatched via `NodeRef` indices. A
   DFS-packed layout (parent-before-children, `u16` deltas when
   the subtree fits) would halve the memory bandwidth required by
   `score` / `attribution` and lift the `~6×` parallel ceiling.
-- **No-alloc scoring** — `score_many` builds one intermediate
-  `Vec<AnomalyScore>`; a callback-based variant would cut the
-  allocation on tight hot paths.
-- **AVX-512 for `D=64`** — the bounding-box `range_sum` already
-  uses `wide::f64x4`; `f64x8` on AVX-512 hosts would help at
-  large `D`.
+  Requires its own sprint (serde format break, tree-invariant
+  retest across 80+ suite).
+- **AVX-512 `f64x8`** — not actionable on stable Rust without
+  relaxing `#![forbid(unsafe_code)]`. `wide 0.7` ships `f64x4`
+  only; `std::simd` `f64x8` is nightly. Workaround: build with
+  `RUSTFLAGS="-C target-cpu=native"` so LLVM widens the existing
+  `f64x4` lanes to AVX-512 via auto-vectorisation when the host
+  supports it — no code change needed.
+
+### Done (previously listed here)
+
+- **No-alloc scoring** — `RandomCutForest::score_many_with(points, cb)`
+  invokes a caller-supplied closure per score, no intermediate
+  `Vec`. See `tests/bulk_scoring.rs` for coverage.

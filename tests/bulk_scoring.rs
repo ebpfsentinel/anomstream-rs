@@ -42,6 +42,46 @@ fn trained() -> rcf_rs::RandomCutForest<4> {
 }
 
 #[test]
+fn score_many_with_callback_matches_score_many() {
+    let f = trained();
+    let probes: Vec<[f64; 4]> = (0..32)
+        .map(|i| [f64::from(i) * 0.01, 0.05, 0.05, 0.05])
+        .collect();
+    let mut from_callback: Vec<f64> = vec![0.0; probes.len()];
+    f.score_many_with(&probes, |i, s| {
+        from_callback[i] = f64::from(s);
+    })
+    .unwrap();
+    for (i, p) in probes.iter().enumerate() {
+        let plain = f64::from(f.score(p).unwrap());
+        assert_eq!(plain, from_callback[i], "mismatch at idx {i}");
+    }
+}
+
+#[test]
+fn score_many_with_aborts_on_non_finite() {
+    let f = trained();
+    let probes = vec![[0.0, 0.0, 0.0, 0.0], [f64::NAN, 0.0, 0.0, 0.0]];
+    let mut count = 0_usize;
+    let err = f
+        .score_many_with(&probes, |_, _| {
+            count += 1;
+        })
+        .unwrap_err();
+    assert!(matches!(err, RcfError::NaNValue));
+    // First probe succeeded before the NaN aborted the batch.
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn score_many_with_empty_batch() {
+    let f = trained();
+    let mut called = false;
+    f.score_many_with(&[], |_, _| called = true).unwrap();
+    assert!(!called);
+}
+
+#[test]
 fn score_many_matches_individual_calls() {
     let f = trained();
     let probes: Vec<[f64; 4]> = (0..32)

@@ -81,6 +81,12 @@ aborts the batch. Available on `RandomCutForest`,
 `ThresholdedForest`, and `TenantForestPool` (per-tenant;
 absent-tenant returns `None` on read paths).
 
+`score_many_with(points, |i, score| …)` — callback variant that
+skips the intermediate `Vec<AnomalyScore>` allocation. Serial by
+design so the closure needs no `Send + Sync` bound; preferred for
+hot ingest paths that stream results directly into a writer /
+histogram / alert pipeline.
+
 Example: `examples/bulk_scoring.rs`.
 
 ### Score with confidence interval
