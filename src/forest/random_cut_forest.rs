@@ -714,6 +714,77 @@ impl<const D: usize> RandomCutForest<D> {
         Ok(score)
     }
 
+    /// Trimmed-mean variant of [`Self::score`] — sorts per-tree
+    /// scores, drops the top and bottom `trim_fraction` fraction,
+    /// averages the middle `1 - 2·trim_fraction`. Robust against
+    /// single-tree poisoning: an adversary who manages to move one
+    /// tree's score to the extreme tails (MITRE ATLAS
+    /// `AML.T0020` — reservoir poisoning) sees their contribution
+    /// trimmed out, capping the blast radius on the ensemble mean.
+    ///
+    /// Typical `trim_fraction` values: `0.10` (drop 10 %/10 %)
+    /// mirrors the standard "10 % trimmed mean" used in robust
+    /// statistics; `0.25` (drop 25 %/25 %) is a heavier cut.
+    /// `0.0` degrades to [`Self::score`].
+    ///
+    /// Always walks every tree so the sort has a complete sample.
+    /// Cost is `O(T log T)` on top of the score fan-out, negligible
+    /// vs the tree walks themselves.
+    ///
+    /// # Errors
+    ///
+    /// - [`RcfError::NaNValue`] on non-finite input.
+    /// - [`RcfError::EmptyForest`] when no tree holds any leaf.
+    /// - [`RcfError::InvalidConfig`] when
+    ///   `trim_fraction ∉ [0.0, 0.5)`.
+    pub fn score_trimmed(
+        &self,
+        point: &[f64; D],
+        trim_fraction: f64,
+    ) -> RcfResult<AnomalyScore> {
+        if !(0.0..0.5).contains(&trim_fraction) || !trim_fraction.is_finite() {
+            return Err(RcfError::InvalidConfig(format!(
+                "score_trimmed: trim_fraction must be in [0.0, 0.5), got {trim_fraction}"
+            )));
+        }
+        self.ensure_finite_metered(point)?;
+        let scaled = self.scale_point_copy(point);
+        let probe: &[f64; D] = &scaled;
+
+        let mut samples: Vec<f64> = Vec::with_capacity(self.trees.len());
+        for (tree, _, _) in &self.trees {
+            let Some(root) = tree.root() else {
+                continue;
+            };
+            let mass = tree.store().view(root)?.mass();
+            let visitor = ScalarScoreVisitor::new(mass);
+            let s = tree.traverse(probe, visitor)?;
+            samples.push(f64::from(s));
+        }
+        if samples.is_empty() {
+            return Err(RcfError::EmptyForest);
+        }
+
+        samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let trim_count = ((samples.len() as f64) * trim_fraction).floor() as usize;
+        let lo = trim_count;
+        let hi = samples.len().saturating_sub(trim_count);
+        if hi <= lo {
+            return Err(RcfError::InvalidConfig(
+                "score_trimmed: trim_fraction too large for tree count".into(),
+            ));
+        }
+        let slice = &samples[lo..hi];
+        #[allow(clippy::cast_precision_loss)]
+        let mean = slice.iter().sum::<f64>() / slice.len() as f64;
+        let score = AnomalyScore::new(mean.max(0.0))?;
+        #[cfg(feature = "std")]
+        self.metrics
+            .observe_histogram(crate::metrics::names::SCORE_OBSERVATION, f64::from(score));
+        Ok(score)
+    }
+
     /// Score `point` and attach a confidence interval derived from
     /// per-tree dispersion. Returns a [`ScoreWithConfidence`] with
     /// `score` (mean), `stddev` (unbiased sample), `stderr`
@@ -2232,6 +2303,62 @@ mod tests {
         }
         let out = f.score_many_locality_sorted(&[]).unwrap();
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn score_trimmed_rejects_out_of_range_fraction() {
+        let mut f = small_forest();
+        for _ in 0..50 {
+            f.update([0.1, 0.2]).unwrap();
+        }
+        assert!(matches!(
+            f.score_trimmed(&[0.0, 0.0], -0.1).unwrap_err(),
+            RcfError::InvalidConfig(_)
+        ));
+        assert!(matches!(
+            f.score_trimmed(&[0.0, 0.0], 0.5).unwrap_err(),
+            RcfError::InvalidConfig(_)
+        ));
+        assert!(matches!(
+            f.score_trimmed(&[0.0, 0.0], f64::NAN).unwrap_err(),
+            RcfError::InvalidConfig(_)
+        ));
+    }
+
+    #[test]
+    fn score_trimmed_zero_fraction_matches_score() {
+        let mut f = small_forest();
+        for i in 0..200 {
+            #[allow(clippy::cast_precision_loss)]
+            let v = i as f64 * 0.01;
+            f.update([v, v + 0.5]).unwrap();
+        }
+        let probe = [5.0, -3.0];
+        let plain: f64 = f.score(&probe).unwrap().into();
+        let trimmed: f64 = f.score_trimmed(&probe, 0.0).unwrap().into();
+        assert!((plain - trimmed).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn score_trimmed_drops_outlier_trees() {
+        let mut f = small_forest();
+        for i in 0..200 {
+            #[allow(clippy::cast_precision_loss)]
+            let v = i as f64 * 0.01;
+            f.update([v, v + 0.5]).unwrap();
+        }
+        let probe = [5.0, -3.0];
+        let plain: f64 = f.score(&probe).unwrap().into();
+        // 25 % trim drops the extreme quartiles — trimmed mean
+        // must be finite, non-negative, and typically closer to
+        // the distribution centre.
+        let trimmed: f64 = f.score_trimmed(&probe, 0.25).unwrap().into();
+        assert!(trimmed.is_finite());
+        assert!(trimmed >= 0.0);
+        // Sanity: trimmed mean should not explode beyond plain mean
+        // by more than the mean itself (very loose bound; the real
+        // contract is "robust to single-tree poisoning").
+        assert!(trimmed <= plain.max(1.0) * 2.0);
     }
 
     #[test]

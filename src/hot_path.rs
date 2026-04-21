@@ -65,7 +65,7 @@
 
 #![cfg(feature = "std")]
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
@@ -87,11 +87,31 @@ pub struct UpdateSampler {
     accepted: AtomicU64,
     /// Running total of rejected offers.
     rejected: AtomicU64,
+    /// Per-sampler secret multipliers used by [`Self::accept_hash`].
+    /// When non-zero the sampler runs a keyed remix of the caller-
+    /// supplied `flow_hash` before the modulo decision — makes the
+    /// admission boundary unpredictable to an attacker who can
+    /// observe or influence their own `flow_hash` value but cannot
+    /// learn the sampler secret. Zero-init means "no remix", matches
+    /// the historical deterministic behaviour of [`Self::new`].
+    mix_k1: u64,
+    /// Second secret — XOR'd at the end of the mix to avoid the
+    /// multiply by `mix_k1` alone (a structure the attacker could
+    /// invert given enough observations).
+    mix_k2: u64,
 }
 
 impl UpdateSampler {
     /// Build a sampler keeping 1 offer out of every `keep_every_n`.
     /// `0` and `1` disable sampling (every offer accepted).
+    ///
+    /// **`accept_hash` admission is deterministic without a
+    /// per-sampler secret** — an attacker who can probe the
+    /// admission decision on a known `flow_hash` can spray
+    /// 5-tuples whose hash lands on the admitted residue class
+    /// and poison the reservoir. For internet-facing ingress,
+    /// prefer [`Self::new_keyed`] which seeds the secret from
+    /// `getrandom` at construction.
     #[must_use]
     pub fn new(keep_every_n: u32) -> Self {
         Self {
@@ -99,7 +119,52 @@ impl UpdateSampler {
             counter: AtomicU64::new(0),
             accepted: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
+            mix_k1: 0,
+            mix_k2: 0,
         }
+    }
+
+    /// Keyed variant — same ratio semantics as [`Self::new`] but
+    /// with a per-sampler secret mix applied to every
+    /// [`Self::accept_hash`] input. Defeats the deterministic-
+    /// admission poisoning vector (MITRE ATLAS `AML.T0020`): the
+    /// attacker can't steer their own flow hash into the admitted
+    /// residue class without knowing the per-sampler mix keys,
+    /// which are seeded from the OS CSPRNG at construction and
+    /// never leave the process.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`getrandom::Error`] when the OS entropy source
+    /// is unavailable (embedded / chroot without `/dev/urandom`).
+    ///
+    /// # Panics
+    ///
+    /// Never in practice — the two `try_into().expect(...)` calls
+    /// unwrap a compile-time known 8-byte slice taken from a
+    /// 16-byte buffer.
+    pub fn new_keyed(keep_every_n: u32) -> Result<Self, getrandom::Error> {
+        let mut buf = [0_u8; 16];
+        getrandom::fill(&mut buf)?;
+        let mix_k1 = u64::from_le_bytes(buf[0..8].try_into().expect("16 bytes"));
+        let mix_k2 = u64::from_le_bytes(buf[8..16].try_into().expect("16 bytes"));
+        // Ensure `mix_k1` is non-zero and odd so its use as a
+        // multiplier is always a bijection.
+        let mix_k1 = if mix_k1 == 0 { 0x9E37_79B9_7F4A_7C15 } else { mix_k1 | 1 };
+        Ok(Self {
+            keep_every_n,
+            counter: AtomicU64::new(0),
+            accepted: AtomicU64::new(0),
+            rejected: AtomicU64::new(0),
+            mix_k1,
+            mix_k2,
+        })
+    }
+
+    /// Whether this sampler was built with a keyed mix.
+    #[must_use]
+    pub fn is_keyed(&self) -> bool {
+        self.mix_k1 != 0
     }
 
     /// Configured ratio denominator.
@@ -127,27 +192,54 @@ impl UpdateSampler {
         ok
     }
 
-    /// Per-flow decision — flows with `flow_hash % keep_every_n == 0`
-    /// are admitted, every other flow rejected in full. Deterministic
-    /// across the sampler's lifetime: the *same* flow always samples
-    /// the same way, so the baseline keeps representative coverage
-    /// of every sampled flow rather than slicing any single flow.
+    /// Per-flow decision — flows with
+    /// `keyed_mix(flow_hash) % keep_every_n == 0` are admitted,
+    /// every other flow rejected in full. Deterministic across the
+    /// sampler's lifetime **for that sampler**: the same flow
+    /// always samples the same way, so the baseline keeps
+    /// representative coverage of every sampled flow rather than
+    /// slicing any single flow.
     ///
     /// The caller supplies `flow_hash` — typically a 64-bit mix of
     /// 5-tuple bytes (`SipHash` / `FxHash` / custom). Quality of
     /// sampling only matters modulo `keep_every_n`.
+    ///
+    /// When the sampler was built via [`Self::new_keyed`] a
+    /// per-sampler secret mix (murmur-style finaliser keyed on
+    /// `mix_k1` / `mix_k2`) is applied **before** the modulo so the
+    /// admission residue class is unpredictable without the secret
+    /// (defends against `AML.T0020` reservoir-poisoning sprays).
     pub fn accept_hash(&self, flow_hash: u64) -> bool {
         if self.keep_every_n <= 1 {
             self.accepted.fetch_add(1, Ordering::Relaxed);
             return true;
         }
-        let ok = flow_hash.is_multiple_of(u64::from(self.keep_every_n));
+        let mixed = self.keyed_mix(flow_hash);
+        let ok = mixed.is_multiple_of(u64::from(self.keep_every_n));
         if ok {
             self.accepted.fetch_add(1, Ordering::Relaxed);
         } else {
             self.rejected.fetch_add(1, Ordering::Relaxed);
         }
         ok
+    }
+
+    /// Murmur3-64 finaliser keyed by the sampler secret. Returns
+    /// `h` unchanged when the sampler was built unkeyed (via
+    /// [`Self::new`]) so the legacy `accept_hash` behaviour is
+    /// preserved bit-for-bit.
+    #[inline]
+    fn keyed_mix(&self, h: u64) -> u64 {
+        if self.mix_k1 == 0 {
+            return h;
+        }
+        let mut x = h.wrapping_add(self.mix_k1);
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+        x ^= x >> 33;
+        x ^ self.mix_k2
     }
 
     /// Running total of accepted offers since construction.
@@ -290,6 +382,148 @@ pub fn channel<const D: usize>(capacity: usize) -> (UpdateProducer<D>, UpdateCon
     )
 }
 
+/// Fixed-bucket per-prefix rate cap — bounds how many admissions a
+/// single source prefix can push into the reservoir within a
+/// rolling time window. Defends against the reservoir-poisoning
+/// spray where an attacker floods the ingress from one IP prefix
+/// hoping a fraction land in the reservoir via
+/// [`UpdateSampler::accept_hash`].
+///
+/// Implementation: 256 atomic `u32` buckets indexed by
+/// `prefix_hash & 0xff`. Collisions are soft — the cap bounds
+/// across the *bucket*, not the exact prefix. This trades a small
+/// amount of cross-prefix interference for O(1) lock-free
+/// check-and-record with bounded memory.
+///
+/// # Example
+///
+/// ```ignore
+/// use rcf_rs::hot_path::PrefixRateCap;
+///
+/// let cap = PrefixRateCap::new(100, 1_000); // 100 admits / 1 s window
+/// let now_ms = /* wall-clock */;
+/// if cap.check_and_record(flow_prefix_hash, now_ms) {
+///     forest.update(point)?;
+/// }
+/// ```
+#[derive(Debug)]
+pub struct PrefixRateCap {
+    /// Per-bucket admit counter. 256 buckets keep the struct at
+    /// 1 KiB and give tolerable collision rates for typical
+    /// /24-prefix spreads.
+    buckets: [AtomicU32; Self::BUCKETS],
+    /// Epoch-millisecond timestamp at which the current window
+    /// opened. The next `check_and_record` past `+ window_ms`
+    /// atomically resets the buckets.
+    window_start_ms: AtomicU64,
+    /// Window length. Cap counts reset every `window_ms`.
+    window_ms: u64,
+    /// Maximum admits per bucket per window.
+    cap_per_window: u32,
+    /// Lifetime count of admits that hit the cap and were rejected.
+    capped_total: AtomicU64,
+    /// Lifetime count of admits passed through.
+    admitted_total: AtomicU64,
+}
+
+impl PrefixRateCap {
+    /// Number of buckets. Compile-time constant; 256 buckets ×
+    /// `AtomicU32` = 1 KiB on 64-bit.
+    pub const BUCKETS: usize = 256;
+
+    /// Build a rate cap. `cap_per_window = 0` disables the cap
+    /// (every call to `check_and_record` returns `true`);
+    /// `window_ms = 0` is rejected as invalid.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `window_ms == 0` — a zero-length window is a
+    /// programming error (would admit everything on first call).
+    #[must_use]
+    pub fn new(cap_per_window: u32, window_ms: u64) -> Self {
+        assert!(window_ms > 0, "window_ms must be non-zero");
+        // Cannot use `[AtomicU32::new(0); 256]` because AtomicU32
+        // is !Copy. Build via closure.
+        let buckets: [AtomicU32; Self::BUCKETS] =
+            core::array::from_fn(|_| AtomicU32::new(0));
+        Self {
+            buckets,
+            window_start_ms: AtomicU64::new(0),
+            window_ms,
+            cap_per_window,
+            capped_total: AtomicU64::new(0),
+            admitted_total: AtomicU64::new(0),
+        }
+    }
+
+    /// Record an admission attempt and return `true` when the
+    /// caller is allowed to proceed. Thread-safe, lock-free.
+    pub fn check_and_record(&self, prefix_hash: u64, now_ms: u64) -> bool {
+        if self.cap_per_window == 0 {
+            self.admitted_total.fetch_add(1, Ordering::Relaxed);
+            return true;
+        }
+        // Atomically roll the window if needed.
+        let mut start = self.window_start_ms.load(Ordering::Relaxed);
+        if start == 0 || now_ms.saturating_sub(start) >= self.window_ms {
+            // Try to claim ownership of the reset. Lost races are
+            // fine — any losing thread accepts that its peer reset
+            // the window.
+            let attempted = self.window_start_ms.compare_exchange(
+                start,
+                now_ms,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+            if attempted.is_ok() {
+                for bucket in &self.buckets {
+                    bucket.store(0, Ordering::Relaxed);
+                }
+            }
+            start = now_ms;
+            let _ = start; // silence unused when optimiser strips.
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let idx = ((prefix_hash & 0xff) as usize) & (Self::BUCKETS - 1);
+        let prior = self.buckets[idx].fetch_add(1, Ordering::Relaxed);
+        if prior < self.cap_per_window {
+            self.admitted_total.fetch_add(1, Ordering::Relaxed);
+            true
+        } else {
+            // Already over — roll back the increment so a late
+            // window roll doesn't accumulate forever on this
+            // bucket.
+            self.buckets[idx].fetch_sub(1, Ordering::Relaxed);
+            self.capped_total.fetch_add(1, Ordering::Relaxed);
+            false
+        }
+    }
+
+    /// Lifetime admits that passed the cap.
+    #[must_use]
+    pub fn admitted_total(&self) -> u64 {
+        self.admitted_total.load(Ordering::Relaxed)
+    }
+
+    /// Lifetime admits rejected because the bucket was at cap.
+    #[must_use]
+    pub fn capped_total(&self) -> u64 {
+        self.capped_total.load(Ordering::Relaxed)
+    }
+
+    /// Window length in milliseconds.
+    #[must_use]
+    pub fn window_ms(&self) -> u64 {
+        self.window_ms
+    }
+
+    /// Cap per bucket per window.
+    #[must_use]
+    pub fn cap_per_window(&self) -> u32 {
+        self.cap_per_window
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -416,5 +650,84 @@ mod tests {
         assert!(err == 0);
         // 0, 3, 6 accepted by accept_hash(keep_every_n=3): 3 points.
         assert_eq!(ing, 3);
+    }
+
+    #[test]
+    fn keyed_sampler_admission_differs_from_unkeyed() {
+        // The unkeyed sampler admits h == 0 mod 4.
+        let unkeyed = UpdateSampler::new(4);
+        assert!(unkeyed.accept_hash(0));
+        assert!(unkeyed.accept_hash(4));
+        assert!(!unkeyed.accept_hash(1));
+        assert!(!unkeyed.accept_hash(2));
+
+        // A keyed sampler shifts the residue class. Same hashes
+        // land on a different admission set unless the mix keys
+        // happen to map them back — vanishingly unlikely on a
+        // 128-bit secret.
+        let keyed = UpdateSampler::new_keyed(4).expect("getrandom works");
+        assert!(keyed.is_keyed());
+        let same_decision = (0..8_u64)
+            .filter(|h| unkeyed.accept_hash(*h) == keyed.accept_hash(*h))
+            .count();
+        // 8 hashes, 2 admission outcomes → expected match rate 50 %
+        // under a random mix. Allow a wide range because the mix
+        // is a random oracle, not a uniform shuffle; the point of
+        // the assertion is that the keyed sampler is *not* the
+        // unkeyed one.
+        assert!(
+            same_decision < 8,
+            "keyed sampler accepted every hash exactly like unkeyed — mix ineffective"
+        );
+    }
+
+    #[test]
+    fn keyed_sampler_is_deterministic_within_sampler() {
+        // Same flow hash must decide the same way every call on
+        // the same sampler — baseline coverage per flow.
+        let s = UpdateSampler::new_keyed(4).unwrap();
+        let h = 0xdead_beef_cafe_babe_u64;
+        let d1 = s.accept_hash(h);
+        let d2 = s.accept_hash(h);
+        let d3 = s.accept_hash(h);
+        assert_eq!(d1, d2);
+        assert_eq!(d2, d3);
+    }
+
+    #[test]
+    fn prefix_rate_cap_allows_up_to_cap() {
+        let cap = PrefixRateCap::new(3, 1_000);
+        let prefix = 0x1234_5678_u64;
+        let now = 1_000_u64;
+        assert!(cap.check_and_record(prefix, now));
+        assert!(cap.check_and_record(prefix, now));
+        assert!(cap.check_and_record(prefix, now));
+        // 4th call hits cap → rejected.
+        assert!(!cap.check_and_record(prefix, now));
+        assert_eq!(cap.admitted_total(), 3);
+        assert_eq!(cap.capped_total(), 1);
+    }
+
+    #[test]
+    fn prefix_rate_cap_zero_disables_gate() {
+        let cap = PrefixRateCap::new(0, 1_000);
+        for i in 0..100_u64 {
+            assert!(cap.check_and_record(i, 0));
+        }
+        assert_eq!(cap.admitted_total(), 100);
+        assert_eq!(cap.capped_total(), 0);
+    }
+
+    #[test]
+    fn prefix_rate_cap_resets_on_window_roll() {
+        let cap = PrefixRateCap::new(2, 1_000);
+        let prefix = 0xabcd_u64;
+        // Fill the cap inside one window.
+        assert!(cap.check_and_record(prefix, 100));
+        assert!(cap.check_and_record(prefix, 200));
+        assert!(!cap.check_and_record(prefix, 300));
+        // Advance past the window — next call resets and admits.
+        assert!(cap.check_and_record(prefix, 1_500));
+        assert_eq!(cap.admitted_total(), 3);
     }
 }

@@ -72,10 +72,15 @@ Extensions beyond the AWS signature:
   signals. Matches the shape of AWS Java `RotateShingle`; fixes
   NAB `rogue_agent_key_hold` / SWaT contextual-anomaly floors.
 - `hot_path` module — eBPF-ingress building blocks:
-  `UpdateSampler` (stride / per-flow-hash 1-in-N admission),
+  `UpdateSampler` (stride / per-flow-hash 1-in-N admission, with
+  `new_keyed` variant using a 128-bit `getrandom` secret to
+  defeat MITRE ATLAS `AML.T0020` reservoir-poisoning sprays),
   bounded MPSC `channel::<D>(cap)` returning
   `(UpdateProducer, UpdateConsumer)` for classifier/updater
-  thread split with drop-on-full counter.
+  thread split with drop-on-full counter, `PrefixRateCap`
+  fixed-bucket per-prefix admission cap,
+  `RandomCutForest::score_trimmed` robust ensemble aggregator.
+  Full adversarial threat model in `docs/threat_model.md`.
 
 Deliberately absent from `rcf-rs` (out of scope for streaming
 network anomaly detection):

@@ -539,10 +539,15 @@ any RCF work. Two decision modes:
 
 - `accept_stride()` — monotonic counter, keeps `1 / keep_every_n`
   offers deterministically.
-- `accept_hash(flow_hash)` — per-flow sampling (flows with
-  `flow_hash % keep_every_n == 0` admitted in full, others
-  rejected in full). Preserves baseline shape per flow rather
-  than slicing any single flow.
+- `accept_hash(flow_hash)` — per-flow sampling. Preserves
+  baseline shape per flow rather than slicing any single flow.
+
+Build via `UpdateSampler::new(keep)` (unkeyed, deterministic
+admission — back-compatible) or **`UpdateSampler::new_keyed(keep)`**
+(128-bit secret from `getrandom`, murmur3 keyed mix applied
+before the modulo). Keyed sampler defends against the
+reservoir-poisoning spray (MITRE ATLAS `AML.T0020`) where an
+attacker steers their flow hash into the admitted residue class.
 
 `channel::<D>(capacity)` returns `(UpdateProducer<D>,
 UpdateConsumer<D>)` — bounded MPSC on `std::sync::mpsc::sync_channel`.
@@ -556,6 +561,36 @@ updater drains at its own cadence.
 Types: `UpdateSampler`, `UpdateProducer<D>`, `UpdateConsumer<D>`.
 
 Source: `src/hot_path.rs`.
+
+### `PrefixRateCap` — per-prefix admission rate cap
+
+`rcf_rs::hot_path::PrefixRateCap::new(cap_per_window, window_ms)`
+bounds how many admissions a single source-prefix hash bucket
+can push into the reservoir within a rolling window. Fixed
+256-bucket counter sketch, lock-free `check_and_record`.
+Second defence line (alongside the keyed `UpdateSampler`)
+against reservoir-poisoning floods from a single compromised
+source — documented in `docs/threat_model.md`.
+
+Types: `PrefixRateCap`.
+
+### Trimmed-mean ensemble scoring
+
+`RandomCutForest::score_trimmed(&point, trim_fraction)` sorts
+per-tree scores, drops the top + bottom `trim_fraction` fraction,
+averages the middle. Robust against single-tree poisoning: an
+attacker who manages to move a minority of trees' scores to the
+extreme tails sees their contribution trimmed from the ensemble
+mean. Typical `trim_fraction` values: `0.10` (10 %/10 %) or
+`0.25` (quartile trim). `trim_fraction = 0.0` matches `score()`.
+
+## Security & threat model
+
+See [`docs/threat_model.md`](threat_model.md) for the full
+adversarial threat model covering reservoir poisoning,
+evasion via contextual shift, model extraction, and classifier-
+side resource exhaustion — with the MITRE ATLAS technique IDs
+and the defences shipped in-crate for each.
 
 ## Multi-tenancy
 

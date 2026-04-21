@@ -154,7 +154,7 @@ pub use forest::{PointStore, RandomCutForest, locality_bucket};
 pub use group_score::{FeatureGroup, FeatureGroups, FeatureGroupsBuilder, GroupScores};
 pub use histogram::{HistogramConfig, ScoreHistogram};
 #[cfg(feature = "std")]
-pub use hot_path::{UpdateConsumer, UpdateProducer, UpdateSampler};
+pub use hot_path::{PrefixRateCap, UpdateConsumer, UpdateProducer, UpdateSampler};
 pub use meta_drift::{CusumConfig, DriftKind, DriftVerdict, MetaDriftDetector};
 pub use metrics::{MetricsSink, NoopSink};
 #[cfg(feature = "std")]
