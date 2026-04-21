@@ -74,7 +74,10 @@ fn main() -> Result<(), RcfError> {
     println!("baseline score  = {baseline:.3} (mean of first 100 scored eval samples)");
     println!("\ninjected anomalies:");
     for (label, s) in &anomaly_scores {
-        println!("  {label}   score = {s:.3}   ({:.1}× baseline)", s / baseline);
+        println!(
+            "  {label}   score = {s:.3}   ({:.1}× baseline)",
+            s / baseline
+        );
     }
 
     Ok(())

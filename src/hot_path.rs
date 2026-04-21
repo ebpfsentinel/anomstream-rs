@@ -150,7 +150,11 @@ impl UpdateSampler {
         let mix_k2 = u64::from_le_bytes(buf[8..16].try_into().expect("16 bytes"));
         // Ensure `mix_k1` is non-zero and odd so its use as a
         // multiplier is always a bijection.
-        let mix_k1 = if mix_k1 == 0 { 0x9E37_79B9_7F4A_7C15 } else { mix_k1 | 1 };
+        let mix_k1 = if mix_k1 == 0 {
+            0x9E37_79B9_7F4A_7C15
+        } else {
+            mix_k1 | 1
+        };
         Ok(Self {
             keep_every_n,
             counter: AtomicU64::new(0),
@@ -444,8 +448,7 @@ impl PrefixRateCap {
         assert!(window_ms > 0, "window_ms must be non-zero");
         // Cannot use `[AtomicU32::new(0); 256]` because AtomicU32
         // is !Copy. Build via closure.
-        let buckets: [AtomicU32; Self::BUCKETS] =
-            core::array::from_fn(|_| AtomicU32::new(0));
+        let buckets: [AtomicU32; Self::BUCKETS] = core::array::from_fn(|_| AtomicU32::new(0));
         Self {
             buckets,
             window_start_ms: AtomicU64::new(0),
@@ -615,9 +618,8 @@ mod tests {
         let (p, c) = channel::<2>(8);
         let _ = p.try_enqueue([1.0, 2.0]);
         let _ = p.try_enqueue([3.0, 4.0]);
-        let (ing, err) = c.try_drain::<_, &'static str>(|pt| {
-            if pt[0] > 2.0 { Err("nope") } else { Ok(()) }
-        });
+        let (ing, err) =
+            c.try_drain::<_, &'static str>(|pt| if pt[0] > 2.0 { Err("nope") } else { Ok(()) });
         assert_eq!(ing, 1);
         assert_eq!(err, 1);
     }

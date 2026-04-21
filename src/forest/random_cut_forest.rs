@@ -737,11 +737,7 @@ impl<const D: usize> RandomCutForest<D> {
     /// - [`RcfError::EmptyForest`] when no tree holds any leaf.
     /// - [`RcfError::InvalidConfig`] when
     ///   `trim_fraction ∉ [0.0, 0.5)`.
-    pub fn score_trimmed(
-        &self,
-        point: &[f64; D],
-        trim_fraction: f64,
-    ) -> RcfResult<AnomalyScore> {
+    pub fn score_trimmed(&self, point: &[f64; D], trim_fraction: f64) -> RcfResult<AnomalyScore> {
         if !(0.0..0.5).contains(&trim_fraction) || !trim_fraction.is_finite() {
             return Err(RcfError::InvalidConfig(format!(
                 "score_trimmed: trim_fraction must be in [0.0, 0.5), got {trim_fraction}"
@@ -766,7 +762,11 @@ impl<const D: usize> RandomCutForest<D> {
         }
 
         samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
         let trim_count = ((samples.len() as f64) * trim_fraction).floor() as usize;
         let lo = trim_count;
         let hi = samples.len().saturating_sub(trim_count);
@@ -931,10 +931,7 @@ impl<const D: usize> RandomCutForest<D> {
     /// # Errors
     ///
     /// Propagates [`Self::score_codisp_stateless`] errors.
-    pub fn score_codisp_stateless_many(
-        &self,
-        points: &[[f64; D]],
-    ) -> RcfResult<Vec<AnomalyScore>> {
+    pub fn score_codisp_stateless_many(&self, points: &[[f64; D]]) -> RcfResult<Vec<AnomalyScore>> {
         #[cfg(feature = "parallel")]
         {
             use rayon::prelude::*;
@@ -1008,10 +1005,7 @@ impl<const D: usize> RandomCutForest<D> {
     /// - [`RcfError::EmptyForest`] when no tree accepted any probe.
     /// - Propagates [`Self::update_indexed`] / [`Self::delete`] failures.
     #[cfg(feature = "std")]
-    pub fn score_codisp_many(
-        &mut self,
-        points: &[[f64; D]],
-    ) -> RcfResult<Vec<AnomalyScore>> {
+    pub fn score_codisp_many(&mut self, points: &[[f64; D]]) -> RcfResult<Vec<AnomalyScore>> {
         if points.is_empty() {
             return Ok(Vec::new());
         }
@@ -1184,10 +1178,7 @@ impl<const D: usize> RandomCutForest<D> {
     /// # Errors
     ///
     /// Same as [`Self::score`] / [`Self::attribution`].
-    pub fn score_and_attribution(
-        &self,
-        point: &[f64; D],
-    ) -> RcfResult<(AnomalyScore, DiVector)> {
+    pub fn score_and_attribution(&self, point: &[f64; D]) -> RcfResult<(AnomalyScore, DiVector)> {
         self.ensure_finite_metered(point)?;
         let scaled = self.scale_point_copy(point);
         let point = &scaled;
@@ -1200,8 +1191,7 @@ impl<const D: usize> RandomCutForest<D> {
         };
 
         #[cfg(not(feature = "parallel"))]
-        let (total, mut accumulator, count) =
-            score_attribution_aggregate::<D>(&self.trees, point)?;
+        let (total, mut accumulator, count) = score_attribution_aggregate::<D>(&self.trees, point)?;
 
         if count == 0 {
             return Err(RcfError::EmptyForest);
@@ -1285,10 +1275,7 @@ impl<const D: usize> RandomCutForest<D> {
     /// # Errors
     ///
     /// Same as [`Self::score_many`].
-    pub fn score_many_locality_sorted(
-        &self,
-        points: &[[f64; D]],
-    ) -> RcfResult<Vec<AnomalyScore>> {
+    pub fn score_many_locality_sorted(&self, points: &[[f64; D]]) -> RcfResult<Vec<AnomalyScore>> {
         let n = points.len();
         if n == 0 {
             return Ok(Vec::new());
@@ -1718,7 +1705,10 @@ fn codisp_many_walks_all_trees<const D: usize>(
         trees
             .par_iter()
             .map(|(tree, _, _)| per_tree_fn(tree))
-            .try_reduce(|| (vec![0.0_f64; n], vec![0_usize; n]), |a, b| Ok(reduce_pair(a, b)))
+            .try_reduce(
+                || (vec![0.0_f64; n], vec![0_usize; n]),
+                |a, b| Ok(reduce_pair(a, b)),
+            )
     }
     #[cfg(not(feature = "parallel"))]
     {

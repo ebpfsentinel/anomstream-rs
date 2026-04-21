@@ -113,6 +113,8 @@ pub mod calibrator;
 pub mod config;
 pub mod domain;
 pub mod early_term;
+#[cfg(feature = "std")]
+pub mod ensemble;
 pub mod error;
 pub mod feature_drift;
 pub mod forensic;
@@ -129,14 +131,16 @@ pub mod persistence;
 pub mod pool;
 pub mod sampler;
 pub mod score_ci;
-#[cfg(feature = "std")]
-pub mod shingled;
 #[cfg(feature = "serde")]
 pub(crate) mod serde_util;
 pub mod severity;
+#[cfg(feature = "std")]
+pub mod shingled;
 pub mod tdigest;
 pub mod thresholded;
 pub mod tree;
+#[cfg(feature = "std")]
+pub mod univariate_spot;
 pub mod visitor;
 
 pub use alert_cluster::{AlertCluster, AlertClusterer, ClusterDecision};
@@ -147,6 +151,8 @@ pub use calibrator::{PlattCalibrator, PlattFitConfig};
 pub use config::{ForestBuilder, RcfConfig};
 pub use domain::{AnomalyScore, BoundingBox, Cut, DiVector, Point};
 pub use early_term::{EarlyTermConfig, EarlyTermScore};
+#[cfg(feature = "std")]
+pub use ensemble::{chi_squared_survival_even, fisher_combine};
 pub use error::{RcfError, RcfResult};
 pub use feature_drift::{DriftLevel, FeatureDriftDetector};
 pub use forensic::ForensicBaseline;
@@ -171,5 +177,9 @@ pub use thresholded::{
 };
 pub use tree::{
     InternalData, LeafData, NodeRef, NodeStore, NodeView, NodeViewMut, PointAccessor, RandomCutTree,
+};
+#[cfg(feature = "std")]
+pub use univariate_spot::{
+    DEFAULT_ALERT_P as SPOT_DEFAULT_ALERT_P, DEFAULT_QUANTILE as SPOT_DEFAULT_QUANTILE, PotDetector,
 };
 pub use visitor::{AttributionVisitor, ScalarScoreVisitor, ScoreAttributionVisitor, Visitor};

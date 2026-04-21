@@ -71,6 +71,12 @@ Extensions beyond the AWS signature:
   cache-aware batch scoring (sort by quantised leading-dim key,
   score, un-permute). Wins only on strongly-correlated batches;
   do not swap blindly — bench your workload.
+- `PotDetector` + `fisher_combine` (`univariate_spot` +
+  `ensemble` modules) — streaming Peaks-Over-Threshold univariate
+  bank (Siffer KDD 2017) + Fisher's p-value combination for joint
+  anomaly signal across K feature dims. Orthogonal ensemble head
+  to catch per-dim marginal drift that isolation depth misses on
+  heterogeneously-distributed multivariate features.
 - `ShingledForest<D>` — scalar-stream wrapper with internal
   ring-buffer shingling. Captures temporal autocorrelation that
   bare isolation depth misses on periodic / dwell / beaconing

@@ -18,13 +18,13 @@
 
 #![cfg(all(feature = "std", feature = "parallel"))]
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use rcf_rs::hot_path::{channel, UpdateSampler};
 use rcf_rs::ForestBuilder;
+use rcf_rs::hot_path::{UpdateSampler, channel};
 
 const D: usize = 8;
 

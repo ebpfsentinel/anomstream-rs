@@ -172,11 +172,7 @@ enum Scorer {
 /// normalisation → frozen-baseline scoring → EMA-smoothed score
 /// stream. `scorer` selects between isolation-depth and
 /// probe-based codisp.
-fn score_file(
-    rows: &[Row],
-    windows: &[(String, String)],
-    scorer: Scorer,
-) -> (Vec<f64>, Vec<u8>) {
+fn score_file(rows: &[Row], windows: &[(String, String)], scorer: Scorer) -> (Vec<f64>, Vec<u8>) {
     if rows.len() < 2 * D {
         return (Vec::new(), Vec::new());
     }

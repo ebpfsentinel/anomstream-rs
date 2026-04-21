@@ -157,6 +157,37 @@ for long eval streams.
 
 Source: `src/forest/random_cut_forest.rs`, `src/tree/random_cut_tree.rs`.
 
+### Univariate SPOT detector bank + Fisher combiner
+
+`PotDetector` (in `rcf_rs::univariate_spot`) — streaming
+Peaks-Over-Threshold per-dimension anomaly detector (Siffer et
+al., KDD 2017). For each feature dim it tracks a running quantile
+`u` via the shipped `TDigest`, fits a Generalised Pareto
+Distribution (GPD) to the peak excesses `(x − u) | x > u` by
+method-of-moments, and returns the tail survival probability as
+a p-value in `(0, 1]`. SPOT mode freezes the quantile after warm
+via `freeze_baseline`; DSPOT mode keeps the digest drifting for
+non-stationary streams.
+
+`fisher_combine(&[p_values]) -> f64` (in `rcf_rs::ensemble`) —
+combines K independent p-values into a joint anomaly score via
+Fisher 1932: `T = −2 Σ ln(p_i) ~ χ²(2K)` → survival returned.
+Uses the closed-form `χ²` survival for even dof.
+
+Composition: run one `PotDetector` per feature dim, collect
+per-dim p-values, pipe through `fisher_combine`. Joint p below
+`1e-3` → anomaly. Orthogonal to RCF — the SPOT bank catches
+per-dim marginal drift that isolation depth misses on
+heterogeneously-distributed multivariate features (architect
+review targets TSB-AD-M AUC lift 0.583 → 0.80+).
+
+Types: `PotDetector`, `fisher_combine`, `chi_squared_survival_even`.
+
+Source: `src/univariate_spot.rs`, `src/ensemble.rs`.
+
+Example: `examples/univariate_spot_bank.rs` (4-dim baseline +
+single-dim and all-dim outlier probes, joint p-value reported).
+
 ### Internal shingling (`ShingledForest<D>`)
 
 `ShingledForest<D>` wraps a bare `RandomCutForest<D>` with a ring

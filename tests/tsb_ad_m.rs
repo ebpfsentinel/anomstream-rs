@@ -335,7 +335,9 @@ fn dispatch(
             }
         };
     }
-    arm!(2, 3, 7, 8, 9, 12, 16, 17, 18, 19, 25, 29, 31, 38, 51, 55, 66)
+    arm!(
+        2, 3, 7, 8, 9, 12, 16, 17, 18, 19, 25, 29, 31, 38, 51, 55, 66
+    )
 }
 
 /// Shared test body — iterate the corpus with the selected scorer,
@@ -406,9 +408,7 @@ fn run_corpus(scorer: Scorer, label: &str) -> f64 {
     // Per-dataset aggregate (weighted by positive count).
     let mut per_dataset: BTreeMap<String, (f64, u64, usize)> = BTreeMap::new();
     for r in &results {
-        let entry = per_dataset
-            .entry(r.dataset.clone())
-            .or_insert((0.0, 0, 0));
+        let entry = per_dataset.entry(r.dataset.clone()).or_insert((0.0, 0, 0));
         if r.positives >= MIN_POSITIVES {
             entry.0 += r.auc * r.positives as f64;
             entry.1 += r.positives;
