@@ -21,12 +21,13 @@
 //!
 //! See `scripts/nab/README.md` for scoring protocol + caveats.
 
-#![cfg(feature = "serde_json")]
+#![cfg(all(feature = "serde_json", feature = "parallel"))]
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use rayon::prelude::*;
 use rcf_rs::{AnomalyScore, ForestBuilder};
 use serde_json::Value;
 
@@ -151,11 +152,27 @@ fn auc(scores: &[f64], labels: &[u8]) -> f64 {
     auc_val
 }
 
+/// Which scoring API to exercise per probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scorer {
+    /// Fast isolation-depth `score()` — non-mutating, rayon-
+    /// parallel, eBPF-hot-path friendly.
+    IsolationDepth,
+    /// Probe-based batched codisp via `score_codisp_many` —
+    /// matches the AWS Java / rrcf scoring semantic at ~30× the
+    /// single-probe cost amortised by the shared-walk cache.
+    Codisp,
+}
+
 /// Score one NAB file: `D`-lag embedding → warm-phase z-score
-/// normalisation → frozen-baseline `score()` → EMA-smoothed score
-/// stream. See module-level docs for the ablation-derived choice
-/// of each stage.
-fn score_file(rows: &[Row], windows: &[(String, String)]) -> (Vec<f64>, Vec<u8>) {
+/// normalisation → frozen-baseline scoring → EMA-smoothed score
+/// stream. `scorer` selects between isolation-depth and
+/// probe-based codisp.
+fn score_file(
+    rows: &[Row],
+    windows: &[(String, String)],
+    scorer: Scorer,
+) -> (Vec<f64>, Vec<u8>) {
     if rows.len() < 2 * D {
         return (Vec::new(), Vec::new());
     }
@@ -220,13 +237,22 @@ fn score_file(rows: &[Row], windows: &[(String, String)]) -> (Vec<f64>, Vec<u8>)
     // NOT call `update` on the eval set: NAB anomaly windows are
     // wide (days), and folding anomaly points back into the
     // reservoir drags the baseline toward them and drops recall.
-    let mut raw_scores = Vec::with_capacity(embed_len.saturating_sub(warm_end));
-    let mut labels = Vec::with_capacity(embed_len.saturating_sub(warm_end));
-    for (idx, p) in embeddings[warm_end..].iter().enumerate() {
-        let s: AnomalyScore = forest
-            .score(p)
-            .unwrap_or_else(|_| AnomalyScore::new(0.0).expect("zero score is valid"));
+    let eval = &embeddings[warm_end..];
+    let mut raw_scores: Vec<f64> = Vec::with_capacity(eval.len());
+    for p in eval {
+        let s: AnomalyScore = match scorer {
+            Scorer::IsolationDepth => forest
+                .score(p)
+                .unwrap_or_else(|_| AnomalyScore::new(0.0).expect("zero valid")),
+            Scorer::Codisp => forest
+                .score_codisp(p)
+                .unwrap_or_else(|_| AnomalyScore::new(0.0).expect("zero valid")),
+        };
         raw_scores.push(f64::from(s));
+    }
+
+    let mut labels = Vec::with_capacity(raw_scores.len());
+    for idx in 0..raw_scores.len() {
         let row_idx = warm_end + idx + (D - 1);
         let ts = &rows[row_idx].0;
         labels.push(u8::from(in_any_window(ts, windows)));
@@ -244,9 +270,11 @@ fn score_file(rows: &[Row], windows: &[(String, String)]) -> (Vec<f64>, Vec<u8>)
     (scores, labels)
 }
 
-#[test]
-#[ignore = "requires RCF_NAB_PATH pointing at a cloned NAB repo"]
-fn realknowncause_aggregate_auc_above_floor() {
+/// Shared corpus runner — iterates `data/realKnownCause` in
+/// parallel (one rayon worker per file), prints per-file AUC and
+/// the weighted aggregate, returns the aggregate for floor-based
+/// regression guards.
+fn run_corpus(scorer: Scorer, label: &str) -> f64 {
     let Some(root) = nab_root() else {
         panic!(
             "RCF_NAB_PATH not set — clone https://github.com/numenta/NAB \
@@ -273,31 +301,35 @@ fn realknowncause_aggregate_auc_above_floor() {
         data_dir.display()
     );
 
+    // Parallel across files — each file owns its own forest, so
+    // per-file pipelines are independent. `par_iter` fans out one
+    // CSV per rayon worker.
+    let paths: Vec<_> = entries.iter().map(std::fs::DirEntry::path).collect();
+    let per_file: Vec<(String, f64, u64)> = paths
+        .par_iter()
+        .map(|csv_path| {
+            let file_name = csv_path.file_name().unwrap().to_string_lossy().into_owned();
+            let window_key = format!("realKnownCause/{file_name}");
+            let empty = Vec::new();
+            let w = windows.get(&window_key).unwrap_or(&empty);
+            let rows = load_csv(csv_path);
+            let (scores, labels) = score_file(&rows, w, scorer);
+            let pos: u64 = labels.iter().map(|&l| u64::from(l)).sum();
+            let a = auc(&scores, &labels);
+            (file_name, a, pos)
+        })
+        .collect();
+
     let mut weighted_sum = 0.0_f64;
     let mut total_anoms = 0_u64;
-    let mut per_file = Vec::new();
-
-    for entry in &entries {
-        let csv_path = entry.path();
-        let file_name = csv_path.file_name().unwrap().to_string_lossy().into_owned();
-        let window_key = format!("realKnownCause/{file_name}");
-        let empty = Vec::new();
-        let w = windows.get(&window_key).unwrap_or(&empty);
-        let rows = load_csv(&csv_path);
-        let (scores, labels) = score_file(&rows, w);
-        let pos: u64 = labels.iter().map(|&l| u64::from(l)).sum();
-        let a = auc(&scores, &labels);
-        per_file.push((file_name.clone(), a, pos));
-        #[allow(clippy::cast_precision_loss)]
-        {
-            weighted_sum += a * pos as f64;
-        }
-        total_anoms += pos;
-    }
-
-    println!("\nNAB realKnownCause per-file AUC:");
+    println!("\nNAB realKnownCause [{label}] per-file AUC:");
     for (name, a, pos) in &per_file {
         println!("  {a:.3}  pos={pos:<6}  {name}");
+        #[allow(clippy::cast_precision_loss)]
+        {
+            weighted_sum += a * (*pos as f64);
+        }
+        total_anoms += *pos;
     }
     #[allow(clippy::cast_precision_loss)]
     let weighted_auc = if total_anoms == 0 {
@@ -305,8 +337,14 @@ fn realknowncause_aggregate_auc_above_floor() {
     } else {
         weighted_sum / total_anoms as f64
     };
-    println!("aggregate weighted AUC (by positive count): {weighted_auc:.3}");
+    println!("[{label}] aggregate weighted AUC: {weighted_auc:.3}");
+    weighted_auc
+}
 
+#[test]
+#[ignore = "requires RCF_NAB_PATH pointing at a cloned NAB repo"]
+fn realknowncause_aggregate_auc_above_floor() {
+    let weighted_auc = run_corpus(Scorer::IsolationDepth, "score()");
     // Floor is a regression guard, not a quality claim. Adjust
     // downward *only* with a commit message explaining which
     // detector change moved the needle, and by how much.
@@ -314,5 +352,18 @@ fn realknowncause_aggregate_auc_above_floor() {
         weighted_auc > 0.70,
         "aggregate weighted AUC = {weighted_auc:.3} below floor 0.70 — \
          detector regression or dataset change?"
+    );
+}
+
+#[test]
+#[ignore = "requires RCF_NAB_PATH; codisp path is ~30× slower than score()"]
+fn realknowncause_codisp_aggregate_auc_above_floor() {
+    let weighted_auc = run_corpus(Scorer::Codisp, "score_codisp_many()");
+    // Codisp floor is independent: probe-based scoring hits a
+    // higher AUC on NAB but the magnitude depends on the batched
+    // shared-walk behaviour, so pin a conservative guard.
+    assert!(
+        weighted_auc > 0.70,
+        "codisp aggregate weighted AUC = {weighted_auc:.3} below floor 0.70"
     );
 }

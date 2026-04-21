@@ -116,7 +116,8 @@ mean ± stddev, coefficient of variation in parens.
 
 | Impl | Backend | Updates/s | Scores/s | AUC |
 |---|---|---|---|---|
-| `rcf-rs` 0.0.0-dev | Rust, rayon-parallel | **17 500 ± 1 240** (7 %) | 125 900 ± 1 840 (1.5 %) | 1.000 ± 0 |
+| `rcf-rs` 0.0.0-dev, `score()` | Rust, rayon-parallel | **17 500 ± 1 240** (7 %) | 125 900 ± 1 840 (1.5 %) | 1.000 ± 0 |
+| `rcf-rs` 0.0.0-dev, `score_codisp()` | Rust, serial per probe | — (uses insert/delete per probe) | ~1 140 (single seed) | 1.000 |
 | `randomcutforest-java` 4.4.0 | JVM 26, cold | 2 090 ± 134 (6 %) | 8 870 ± 415 (5 %) | 1.000 ± 0 |
 | `rrcf` 0.4.4 | Python + NumPy | 73 ± 3 (4 %) | 94 150 ± 4 840 (5 %) | 0.992 ± 0 |
 | `sklearn.IsolationForest` | NumPy + Cython | batch-only | **136 300 ± 2 450** (2 %) | 1.000 ± 0 |
@@ -126,10 +127,16 @@ Ratios (mean/mean):
 - **Updates**: rcf-rs is ~8.4× faster than AWS Java, ~240× faster
   than rrcf. CVs around 5-7 % on all impls; the ratios sit well
   outside the noise floor.
-- **Scores**: sklearn edges rcf-rs by 8 % (136k vs 126k) — a
-  real but small gap (stddevs combined ≈ 3k, so the 10k delta
-  is ~3σ significant). rrcf trails rcf-rs by ~25 %; AWS Java
-  trails by ~14×.
+- **Scores (fast path)**: sklearn edges rcf-rs `score()` by 8 %
+  (136k vs 126k) — real but small (stddevs combined ≈ 3k, so the
+  10k delta is ~3σ significant). rrcf trails rcf-rs by ~25 %;
+  AWS Java trails by ~14×.
+- **Scores (codisp path)**: rcf-rs `score_codisp()` mutates the
+  forest per probe (insert → walk leaf→root → delete) so it is
+  two orders of magnitude slower than `score()` — ~1.1k probes/s
+  at the same `(100, 256, D=16)` config. Matches AWS Java
+  `getAnomalyScore` / rrcf `codisp()` semantic; use it for SOC
+  triage / forensic replay, not the eBPF hot path.
 - **AUC**: identical within measurement precision across every
   seed (0.992 for rrcf, 1.000 for the other three).
 
@@ -160,17 +167,20 @@ Two scoring APIs, two use cases:
   and AWS Java.
 
 Same embedding pipeline (32-lag → warm-phase z-score → EMA
-α = 0.02), 15 % warm, 100 trees × 256 sample.
+α = 0.02), 15 % warm, 100 trees × 256 sample. `tests/nab.rs`
+runs the 7-file corpus in parallel via rayon `par_iter` over
+files — each file owns an independent forest. Full run
+(both variants, parallel file iter) completes in ~12 s.
 
 | File | rcf-rs `score()` | rcf-rs `score_codisp()` | rrcf | AWS Java |
 |---|---|---|---|---|
-| `ambient_temperature_system_failure` | 0.813 | **0.813** | 0.734 | 0.786 |
-| `cpu_utilization_asg_misconfiguration` | **0.953** | 0.939 | 0.849 | 0.906 |
-| `ec2_request_latency_system_failure` | 0.709 | **0.739** | 0.481 | 0.482 |
-| `machine_temperature_system_failure` | 0.578 | 0.666 | 0.880 | **0.883** |
-| `nyc_taxi` | 0.698 | **0.721** | 0.571 | 0.540 |
-| `rogue_agent_key_hold` | 0.145 | **0.692** | 0.535 | 0.633 |
-| `rogue_agent_key_updown` | 0.633 | **0.721** | 0.657 | 0.542 |
+| `ambient_temperature_system_failure` | **0.813** | **0.813** | 0.734 | 0.786 |
+| `cpu_utilization_asg_misconfiguration` | 0.953 | **0.969** | 0.849 | 0.906 |
+| `ec2_request_latency_system_failure` | 0.709 | 0.706 | 0.481 | 0.482 |
+| `machine_temperature_system_failure` | 0.578 | 0.817 | 0.880 | **0.883** |
+| `nyc_taxi` | **0.698** | 0.636 | 0.571 | 0.540 |
+| `rogue_agent_key_hold` | 0.145 | 0.198 | 0.535 | **0.633** |
+| `rogue_agent_key_updown` | **0.633** | 0.579 | 0.657 | 0.542 |
 | **weighted aggregate** | 0.719 | **0.776** | 0.748 | 0.757 |
 
 ### Hyperparameter ablation
@@ -239,11 +249,13 @@ java -cp "scripts/nab:/tmp/aws-rcf/randomcutforest-core-4.4.0.jar" RcfBenchNab /
 TSB-AD-M (TheDatumOrg, 2024): 200 multivariate series across 16
 source datasets, per-point binary labels, native multivariate
 (no lag embedding). Pipeline: per-dim z-score on the upstream
-`tr_<N>` train split, frozen-baseline `score()`, EMA-smooth
+`tr_<N>` train split, frozen-baseline scoring, EMA-smooth
 α = 0.02. Forest `(100, 256)`, seed `2026`. Const-generic
 whitelist `{2, 3, 7, 8, 9, 12, 16, 17, 18, 19, 25, 29, 31, 38, 51,
 55, 66}` covers **192 / 200 files (96 %)**; the eight D=248 files
-are skipped. Runtime: ~12 min on the reference hardware.
+are skipped. `tests/tsb_ad_m.rs` runs the corpus in parallel via
+rayon `par_iter` over files. Runtime on reference hardware:
+~3 min for `score()`, ~6 min for `score_codisp()`.
 
 Per-dataset ROC-AUC (weighted by positive count) against
 `randomcutforest-java` 4.4.0 on the same corpus. rrcf 0.4.4 was
@@ -262,7 +274,7 @@ to reproduce; the script is provided for reproducibility.
 | SVDB | 31 | 0.692 | 0.737 | **0.757** |
 | LTDB | 5 | 0.601 | **0.755** | **0.755** |
 | Exathlon | 27 | 0.491 | **0.894** | 0.865 |
-| MITDB | 13 | 0.601 | **0.678** | 0.660 |
+| MITDB | 13 | 0.597 | **0.678** | 0.660 |
 | PSM | 1 | 0.608 | 0.595 | **0.611** |
 | CATSv2 | 6 | **0.580** | 0.547 | 0.547 |
 | CreditCard | 1 | 0.589 | 0.679 | **0.693** |
@@ -272,7 +284,7 @@ to reproduce; the script is provided for reproducibility.
 | OPPORTUNITY | 8 (skipped D=248) | — | — | 0.298 |
 | SWaT | 2 | 0.282 | 0.825 | 0.825 |
 | TAO | 13 | 0.451 | 0.453 | **0.471** |
-| **aggregate weighted** | **192 / 200** | **0.584** | **0.768** | **0.753** |
+| **aggregate weighted** | **192 / 200** | **0.583** | **0.768** | **0.753** |
 
 - **rcf-rs `score()`** — isolation depth, rayon-parallel, full
   eval scan. Same fast API eBPFsentinel ships on the hot path.

@@ -70,6 +70,24 @@ fn main() -> Result<(), RcfError> {
 
     let a = auc(&scores, eval_labels);
 
+    // Second scoring round — probe-based codisp via the
+    // single-probe `score_codisp` path (insert probe, walk
+    // leaf → root, delete probe per probe). The batched
+    // `score_codisp_many` saturates the reservoir when the batch
+    // is larger than `sample_size`, so the per-probe path is the
+    // fair apples-to-apples comparison against rrcf's `codisp()`
+    // / AWS Java's `getAnomalyScore` semantic.
+    let t_codisp = Instant::now();
+    let mut codisp_scores: Vec<f64> = Vec::with_capacity(eval.len());
+    for p in eval {
+        let s: AnomalyScore = forest.score_codisp(p)?;
+        codisp_scores.push(f64::from(s));
+    }
+    let codisp_ns = t_codisp.elapsed().as_nanos();
+    #[allow(clippy::cast_precision_loss)]
+    let codisp_per_s = eval.len() as f64 * 1.0e9 / codisp_ns as f64;
+    let codisp_auc = auc(&codisp_scores, eval_labels);
+
     #[allow(clippy::cast_precision_loss)]
     {
         println!(
@@ -82,6 +100,11 @@ fn main() -> Result<(), RcfError> {
             score_ns as f64 / 1.0e6
         );
         println!(
+            "  codisp scores  = {}, total {:.2} ms",
+            eval.len(),
+            codisp_ns as f64 / 1.0e6
+        );
+        println!(
             "  per-op insert  = {:.0} ns",
             insert_ns as f64 / split as f64
         );
@@ -89,10 +112,16 @@ fn main() -> Result<(), RcfError> {
             "  per-op score   = {:.0} ns",
             score_ns as f64 / eval.len() as f64
         );
+        println!(
+            "  per-op codisp  = {:.0} ns",
+            codisp_ns as f64 / eval.len() as f64
+        );
     }
     println!("  updates_per_s  = {insert_per_s:.0}");
     println!("  scores_per_s   = {score_per_s:.0}");
+    println!("  codisp_per_s   = {codisp_per_s:.0}");
     println!("  auc            = {a:.3}");
+    println!("  codisp_auc     = {codisp_auc:.3}");
     Ok(())
 }
 
