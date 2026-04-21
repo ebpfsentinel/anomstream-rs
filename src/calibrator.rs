@@ -334,6 +334,56 @@ impl PlattCalibrator {
     pub fn calibrate_many(&self, scores: &[f64]) -> Vec<f64> {
         scores.iter().map(|s| self.calibrate(*s)).collect()
     }
+
+    /// Online update — one SGD step on the logistic loss for a
+    /// single labelled observation. Use to **refine** an existing
+    /// calibrator as SOC feedback accumulates without re-fitting
+    /// the full batch. `lr` is the learning rate (typical range
+    /// `1e-3 .. 1e-1`); higher values track drift faster but
+    /// increase variance.
+    ///
+    /// Gradient derivation — logistic loss
+    /// `L = −[y · ln(p) + (1 − y) · ln(1 − p)]` with
+    /// `p = 1/(1 + exp(a·s + b))` gives:
+    ///
+    /// ```text
+    /// ∂L/∂a = (p − y) · s
+    /// ∂L/∂b = (p − y)
+    /// ```
+    ///
+    /// SGD step: `a ← a − lr · (p − y) · s`, `b ← b − lr · (p − y)`.
+    /// Note the label polarity is inverted vs the classical
+    /// Platt parameterisation — `p` here is `P(y = 1 | score)`,
+    /// and anomalous samples (high score) must map to
+    /// `label = true`. Non-finite scores are silently dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RcfError::InvalidConfig`] on non-positive / non-
+    /// finite `lr`.
+    pub fn update_online(
+        &mut self,
+        score: f64,
+        label: bool,
+        lr: f64,
+    ) -> RcfResult<()> {
+        if !lr.is_finite() || lr <= 0.0 {
+            return Err(RcfError::InvalidConfig(format!(
+                "PlattCalibrator::update_online: lr must be finite and > 0, got {lr}"
+            )));
+        }
+        if !score.is_finite() {
+            return Ok(());
+        }
+        let p = self.calibrate(score);
+        let y = f64::from(u8::from(label));
+        let err = p - y;
+        self.a -= lr * err * score;
+        self.b -= lr * err;
+        self.iters = self.iters.saturating_add(1);
+        self.converged = false;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

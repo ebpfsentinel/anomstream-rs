@@ -71,6 +71,19 @@ Extensions beyond the AWS signature:
   cache-aware batch scoring (sort by quantised leading-dim key,
   score, un-permute). Wins only on strongly-correlated batches;
   do not swap blindly — bench your workload.
+- `DynamicForest<MAX_D>` (`dynamic_forest`) — runtime-dim wrapper
+  for heterogeneous multi-tenant / MSSP deployments. Zero-pads
+  inputs shorter than `MAX_D`; preserves the const-generic
+  hot-path semantics.
+- `SageEstimator<D>` (`sage`) — Monte-Carlo permutation-sampling
+  Shapley attribution (Covert NeurIPS 2020). Interaction-aware
+  alternative to the marginal `DiVector` attribution.
+- `LshAlertClusterer` (`lsh_cluster`) — O(1) bucket-hash
+  alternative to the cosine-similarity `AlertClusterer`. Scales
+  to MSSP-volume alert streams.
+- `PlattCalibrator::update_online` — SGD step per labelled
+  observation. Refine an existing batch fit as feedback
+  accumulates.
 - `FeedbackStore<D>` + `FeedbackLabel` (`feedback` module) —
   SOC-analyst-label ingestion (Das et al. `arXiv:1708.09441`).
   Analyst labels (`Benign` / `Confirmed`) fold into a bounded

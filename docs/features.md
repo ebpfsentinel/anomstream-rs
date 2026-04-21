@@ -157,6 +157,55 @@ for long eval streams.
 
 Source: `src/forest/random_cut_forest.rs`, `src/tree/random_cut_tree.rs`.
 
+### Runtime-dim wrapper (`DynamicForest<MAX_D>`)
+
+`DynamicForest<MAX_D>` wraps `RandomCutForest<MAX_D>` behind a
+runtime-sized input API (`&[f64]` of caller-declared `active_dim
+≤ MAX_D`). Zero-pads shorter inputs to `MAX_D` — RCF's range-
+weighted cut sampling naturally skips zero-range dims so the
+pad contributes nothing to scores or attributions. Targets MSSP
+/ heterogeneous multi-tenant deployments where const-generic
+`D` blocks a single monomorphisation across tenants.
+
+Hot-path callers with a known-fixed dim keep using the bare
+`RandomCutForest<D>` — it's faster (fewer runtime checks, better
+inlining). `DynamicForest` is the escape hatch.
+
+Types: `DynamicForest<MAX_D>`.
+
+Source: `src/dynamic_forest.rs`.
+
+### Shapley attribution via SAGE estimator
+
+`SageEstimator<D>` (in `rcf_rs::sage`) — Monte-Carlo
+permutation-sampling Shapley estimator (Covert et al. NeurIPS
+2020). Accounts for feature interactions the marginal per-dim
+`DiVector` ignores: when two dims jointly signal anomaly but
+neither alone does, Shapley distributes the score contribution
+across both. Caller supplies a baseline point (warm-phase mean
+or synthetic null); estimator samples `K` random permutations,
+computes each dim's marginal contribution as it joins the
+coalition, averages. Cost `O(K · D)` forest scores per probe
+— batch / forensic replay, not hot-path.
+
+Types: `SageEstimator<D>`, `SageExplanation<D>`.
+
+Source: `src/sage.rs`.
+
+### LSH-based alert clustering
+
+`LshAlertClusterer` (in `rcf_rs::lsh_cluster`) — quantises every
+per-dim attribution value into a 4-bit symbol and uses the
+concatenated hex string as the bucket key. O(1) lookup via
+`HashMap<String, u64>`. Complement to the cosine-similarity
+`AlertClusterer` — LSH scales to MSSP-volume alert streams where
+pairwise cosine is too slow. Mirrors the TLSH spirit (Oliver et
+al. 2013) without bigram-frequency overhead.
+
+Types: `LshAlertClusterer`, `LshClusterDecision`.
+
+Source: `src/lsh_cluster.rs`.
+
 ### SOC feedback ingestion
 
 `FeedbackStore<D>` (in `rcf_rs::feedback`) — bounded ledger of
@@ -522,6 +571,11 @@ label-homogeneous sets numerically safe. `calibrate(score)` /
 `calibrate_many(&scores)` at inference. Serde roundtrippable.
 Intended for audit-defensible alerting policies (SOC2 / NIS2)
 where a raw score is meaningless in compliance paperwork.
+
+Online update via `PlattCalibrator::update_online(score, label,
+lr)` applies one SGD step on the logistic loss per observation
+— refine the fit as SOC feedback accumulates without re-running
+the batch Newton-Raphson solver.
 
 Types: `PlattCalibrator`, `PlattFitConfig`.
 

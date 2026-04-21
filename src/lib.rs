@@ -116,6 +116,8 @@ pub mod config;
 pub mod domain;
 #[cfg(feature = "std")]
 pub mod drift_aware;
+#[cfg(feature = "std")]
+pub mod dynamic_forest;
 pub mod early_term;
 #[cfg(feature = "std")]
 pub mod feedback;
@@ -129,12 +131,16 @@ pub mod group_score;
 pub mod histogram;
 #[cfg(feature = "std")]
 pub mod hot_path;
+#[cfg(feature = "std")]
+pub mod lsh_cluster;
 pub mod meta_drift;
 pub mod metrics;
 #[cfg(feature = "serde")]
 pub mod persistence;
 #[cfg(feature = "std")]
 pub mod pool;
+#[cfg(feature = "std")]
+pub mod sage;
 pub mod sampler;
 pub mod score_ci;
 #[cfg(feature = "serde")]
@@ -164,6 +170,8 @@ pub use adwin::{
 #[cfg(feature = "std")]
 pub use drift_aware::{DriftAwareForest, DriftRecoveryConfig};
 #[cfg(feature = "std")]
+pub use dynamic_forest::DynamicForest;
+#[cfg(feature = "std")]
 pub use feedback::{
     DEFAULT_CAPACITY as FEEDBACK_DEFAULT_CAPACITY,
     DEFAULT_KERNEL_SIGMA as FEEDBACK_DEFAULT_SIGMA,
@@ -179,10 +187,17 @@ pub use group_score::{FeatureGroup, FeatureGroups, FeatureGroupsBuilder, GroupSc
 pub use histogram::{HistogramConfig, ScoreHistogram};
 #[cfg(feature = "std")]
 pub use hot_path::{PrefixRateCap, UpdateConsumer, UpdateProducer, UpdateSampler};
+#[cfg(feature = "std")]
+pub use lsh_cluster::{LshAlertClusterer, LshClusterDecision};
 pub use meta_drift::{CusumConfig, DriftKind, DriftVerdict, MetaDriftDetector};
 pub use metrics::{MetricsSink, NoopSink};
 #[cfg(feature = "std")]
 pub use pool::{ReadinessSummary, TenantForestPool};
+#[cfg(feature = "std")]
+pub use sage::{
+    DEFAULT_PERMUTATIONS as SAGE_DEFAULT_PERMUTATIONS, DEFAULT_SEED as SAGE_DEFAULT_SEED,
+    SageEstimator, SageExplanation,
+};
 pub use sampler::{ReservoirSampler, SamplerOp};
 pub use score_ci::{DEFAULT_Z_FACTOR as DEFAULT_CI_Z_FACTOR, ScoreWithConfidence};
 pub use severity::{Severity, SeverityBands};
