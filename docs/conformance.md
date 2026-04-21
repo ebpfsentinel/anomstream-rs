@@ -71,6 +71,13 @@ Extensions beyond the AWS signature:
   cache-aware batch scoring (sort by quantised leading-dim key,
   score, un-permute). Wins only on strongly-correlated batches;
   do not swap blindly — bench your workload.
+- `FeedbackStore<D>` + `FeedbackLabel` (`feedback` module) —
+  SOC-analyst-label ingestion (Das et al. `arXiv:1708.09441`).
+  Analyst labels (`Benign` / `Confirmed`) fold into a bounded
+  ledger; `adjust(probe, raw_score)` returns a Gaussian-kernel-
+  weighted adjustment (Benign pulls down, Confirmed pushes up),
+  forest untouched. Lightweight alternative to full AAD per-leaf
+  weight learning — swap in later if AUC gap justifies.
 - `AdwinDetector` + `DriftAwareForest` (`adwin` + `drift_aware`
   modules) — ADWIN adaptive-window change-point detector (Bifet
   SDM 2007) + shadow-forest swap policy for drift recovery.

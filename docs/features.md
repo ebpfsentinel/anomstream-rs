@@ -157,6 +157,31 @@ for long eval streams.
 
 Source: `src/forest/random_cut_forest.rs`, `src/tree/random_cut_tree.rs`.
 
+### SOC feedback ingestion
+
+`FeedbackStore<D>` (in `rcf_rs::feedback`) — bounded ledger of
+analyst-labelled points. Das et al., *Incorporating Feedback
+into Tree-based Anomaly Detection*, `arXiv:1708.09441`. API:
+`label(point, FeedbackLabel::Benign | Confirmed)`,
+`adjust(probe, raw_score) -> adjusted`. The adjustment adds a
+Gaussian-kernel-weighted sum of every stored label's sign to
+the raw score — Benign labels pull nearby probes **down**,
+Confirmed labels push nearby probes **up**. Non-mutating on the
+forest side: the hot-path `score()` is untouched, adjustment is
+an additive bias layer the caller applies post-score.
+
+Lifetime defaults: `capacity = 512`, `sigma = 1.0`, `strength =
+1.0`. FIFO eviction on capacity pressure. Clamps adjusted score
+to `≥ 0`.
+
+Types: `FeedbackStore<D>`, `FeedbackLabel`.
+
+Source: `src/feedback.rs`.
+
+Example: `examples/feedback_adjust.rs` (baseline forest + benign
+label on an outlier probe, adjusted score drops from 2.23 → 1.23
+on the exact probe and from 2.35 → 1.36 on a nearby one).
+
 ### Drift recovery — shadow forest + ADWIN
 
 `AdwinDetector` (in `rcf_rs::adwin`) — streaming change-point

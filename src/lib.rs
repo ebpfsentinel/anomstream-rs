@@ -118,6 +118,8 @@ pub mod domain;
 pub mod drift_aware;
 pub mod early_term;
 #[cfg(feature = "std")]
+pub mod feedback;
+#[cfg(feature = "std")]
 pub mod ensemble;
 pub mod error;
 pub mod feature_drift;
@@ -161,6 +163,12 @@ pub use adwin::{
 };
 #[cfg(feature = "std")]
 pub use drift_aware::{DriftAwareForest, DriftRecoveryConfig};
+#[cfg(feature = "std")]
+pub use feedback::{
+    DEFAULT_CAPACITY as FEEDBACK_DEFAULT_CAPACITY,
+    DEFAULT_KERNEL_SIGMA as FEEDBACK_DEFAULT_SIGMA,
+    DEFAULT_STRENGTH as FEEDBACK_DEFAULT_STRENGTH, FeedbackLabel, FeedbackStore,
+};
 #[cfg(feature = "std")]
 pub use ensemble::{chi_squared_survival_even, fisher_combine};
 pub use error::{RcfError, RcfResult};
