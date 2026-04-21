@@ -13,7 +13,8 @@ use mimalloc::MiMalloc;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rcf_rs::{
-    EarlyTermConfig, ForestBuilder, RandomCutForest, TenantForestPool, ThresholdedForestBuilder,
+    EarlyTermConfig, ForestBuilder, RandomCutForest, TenantForestPool, ThresholdedForest,
+    ThresholdedForestBuilder,
 };
 use std::hint::black_box;
 
@@ -227,11 +228,102 @@ fn bench_tenant(c: &mut Criterion) {
     group.finish();
 }
 
+/// `score_codisp_stateless` (single probe) + `_many` (batched).
+/// Root→leaf walk along stored cuts, no reservoir mutation.
+/// Documented at ~12× faster than mutating `score_codisp_many` on
+/// the NAB corpus; micro-bench here pins the per-probe cost.
+fn bench_codisp_stateless(c: &mut Criterion) {
+    let mut group = c.benchmark_group("codisp_stateless");
+    let forest = build_warm_forest::<16>(100, 256, 2026);
+    let probe_single: [f64; 16] = make_batch::<16>(7, 1)[0];
+
+    group.bench_function("single_probe/100t_256s_16d", |b| {
+        b.iter(|| {
+            let s = forest
+                .score_codisp_stateless(black_box(&probe_single))
+                .expect("codisp_stateless");
+            black_box(s);
+        });
+    });
+
+    for &batch in &[16_usize, 64, 256] {
+        let probes: Vec<[f64; 16]> = make_batch::<16>(11, batch);
+        group.bench_function(format!("many_k{batch}/100t_256s_16d"), |b| {
+            b.iter(|| {
+                let out = forest
+                    .score_codisp_stateless_many(black_box(&probes))
+                    .expect("codisp_stateless_many");
+                black_box(out);
+            });
+        });
+    }
+    group.finish();
+}
+
+/// `ThresholdedForest::process` — the TRCF headline API (update
+/// + score + EMA + verdict). One call per point, end-to-end.
+fn bench_thresholded_process(c: &mut Criterion) {
+    let mut group = c.benchmark_group("thresholded_process");
+    group.bench_function("100t_256s_16d", |b| {
+        let mut detector: ThresholdedForest<16> = ThresholdedForestBuilder::<16>::new()
+            .num_trees(100)
+            .sample_size(256)
+            .min_observations(32)
+            .min_threshold(0.5)
+            .seed(2026)
+            .build()
+            .expect("trcf build");
+        // Warm up with one reservoir-worth to avoid cold-start skew.
+        let mut rng = ChaCha8Rng::seed_from_u64(2026);
+        for _ in 0..1024 {
+            let mut p = [0.0_f64; 16];
+            for slot in &mut p {
+                *slot = rng.random::<f64>();
+            }
+            detector.process(p).expect("warm process");
+        }
+        let mut rng_live = ChaCha8Rng::seed_from_u64(7);
+        b.iter(|| {
+            let mut p = [0.0_f64; 16];
+            for slot in &mut p {
+                *slot = rng_live.random::<f64>();
+            }
+            let v = detector.process(black_box(p)).expect("process");
+            black_box(v);
+        });
+    });
+    group.finish();
+}
+
+/// `RandomCutForest::delete` — paired with `update_indexed` to
+/// measure the per-probe reservoir mutation cost in isolation.
+fn bench_delete(c: &mut Criterion) {
+    let mut group = c.benchmark_group("forest_delete");
+    group.bench_function("100t_256s_16d", |b| {
+        let mut forest = build_warm_forest::<16>(100, 256, 2026);
+        let mut rng = ChaCha8Rng::seed_from_u64(31);
+        b.iter(|| {
+            let mut p = [0.0_f64; 16];
+            for slot in &mut p {
+                *slot = rng.random::<f64>();
+            }
+            // Insert then delete — measures the round-trip cost a
+            // mutating codisp probe pays per point.
+            let idx = forest.update_indexed(p).expect("update_indexed");
+            let _ = forest.delete(black_box(idx));
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_bulk_scoring,
     bench_early_term,
     bench_forensic,
-    bench_tenant
+    bench_tenant,
+    bench_codisp_stateless,
+    bench_thresholded_process,
+    bench_delete
 );
 criterion_main!(benches);

@@ -1,11 +1,17 @@
 # Performance
 
 Criterion (`cargo bench`) — wall-clock mean point estimate,
-`mimalloc` pinned globally. Two bench files:
+`mimalloc` pinned globally. Three bench files:
 
 - `benches/forest_throughput.rs` — core ops (insert, score,
-  attribution).
-- `benches/extended.rs` — bulk, early-term, forensic, tenant.
+  attribution, codisp batched + loop).
+- `benches/extended.rs` — bulk, early-term, forensic, tenant,
+  stateless codisp, thresholded process, delete.
+- `benches/modules.rs` — post-core modules: hot-path ingress,
+  shingled forest, t-digest / histogram, feature / meta drift,
+  ADWIN, LSH clustering, SPOT/DSPOT, Platt calibrator, Fisher
+  p-value combine, dynamic-dim forest, drift-aware shadow swap,
+  SAGE explanations.
 
 ```bash
 cargo bench                                            # full
@@ -172,6 +178,177 @@ Scaling `N=32→512` (16× tenants):
   hides quadratic until core saturation).
 - `score_across_tenants` O(N) parallelised: 30×.
 - `most_similar_top5` O(N·log k) bounded heap: 13×.
+
+## Stateless codisp (frozen-baseline batched)
+
+`(100, 256, D=16)`, walks root → leaf along stored cuts, no
+reservoir mutation, rayon across trees:
+
+| Workload                              | Time     |
+| ------------------------------------- | -------- |
+| `score_codisp_stateless` single probe | 22 µs    |
+| `score_codisp_stateless_many` k=16    | 76 µs    |
+| `score_codisp_stateless_many` k=64    | 228 µs   |
+| `score_codisp_stateless_many` k=256   | 786 µs   |
+
+Key results:
+
+- **Stateless is ~1.5× faster than non-mutating `score()` single
+  probe** (22 µs vs 33 µs) — stored-cut walk skips the EMA /
+  reservoir update cost that `score()` amortises into the
+  shared forest state.
+- **Stateless batched beats mutating batched by ~29×**:
+  `score_codisp_many` @ k=64 lands at 6.66 ms (above, in the
+  throughput table), stateless @ k=64 at 228 µs. Mutating pays
+  per-probe insert + walk + delete and serialises on the
+  reservoir; stateless parallelises cleanly. This ratio is
+  why NAB evaluation dropped from 12.6 s → 1.09 s after
+  switching the eval path from `score_codisp` → stateless.
+
+## TRCF adaptive threshold pipeline
+
+`ThresholdedForest::process` — one call per point, full
+pipeline (update + score + EMA + verdict):
+
+| Workload                      | Time   |
+| ----------------------------- | ------ |
+| `thresholded_process` `(100, 256, 16)` | 54 µs |
+
+Approximately `update (33 µs) + score (33 µs) − fusion savings`,
+with the EMA/threshold logic rounding the sum down to ~54 µs.
+
+## Forest delete
+
+`RandomCutForest::delete` — reservoir eviction + bbox teardown
+per tree. Measured via round-trip `update_indexed → delete`:
+
+| Workload                              | Time   |
+| ------------------------------------- | ------ |
+| `update_indexed + delete` `(100, 256, 16)` | 140 µs |
+
+~4× more expensive than an update alone — bbox recomputation
+up the path and split-arena slot release dominate. Pair with
+`update_indexed` when a probe-based workflow (e.g. codisp)
+needs to restore the reservoir; otherwise rely on the
+reservoir's own eviction (cheaper, amortised).
+
+## Hot-path ingress primitives
+
+Per-call overhead on the classifier hot path — picosecond to
+nanosecond territory:
+
+| Workload                                           | Time     | Throughput |
+| -------------------------------------------------- | -------- | ---------- |
+| `UpdateSampler::accept_stride` keep=8              | 21 ns    | ~47 M/s    |
+| `UpdateSampler::accept_hash` (unkeyed) keep=8      | 11 ns    | ~90 M/s    |
+| `UpdateSampler::accept_hash` (keyed) keep=8        | 11 ns    | ~90 M/s    |
+| `PrefixRateCap::check_and_record` 100/1s           | 18 ns    | ~55 M/s    |
+| `channel::try_enqueue` cap=4096 (+ drain thread)   | 268 ns   | ~3.7 M/s   |
+
+- **Keyed vs unkeyed hash**: murmur-mix finaliser costs ~0.3 ns
+  — negligible vs the atomic fetch-add on the accepted/rejected
+  counters.
+- **`accept_hash` faster than `accept_stride`**: skips the
+  counter atomic; admission decision is a multiply + mod.
+- **Channel throughput** is bounded by the `sync_channel`
+  lock, not by try_send itself. 3.7 M/s per producer is more
+  than enough for typical TC/XDP hot paths (~1-10 M pkt/s at
+  10 Gbps).
+
+## Streaming quantiles / histograms
+
+| Workload                             | Time    | Throughput |
+| ------------------------------------ | ------- | ---------- |
+| `TDigest::record`                    | 44 ns   | ~23 M/s    |
+| `TDigest::quantile(0.99)` after 100k | 58 ns   | query-only |
+| `ScoreHistogram::record` default     | 4.9 ns  | ~205 M/s   |
+
+TDigest amortises centroid compaction into the 10×-compression
+buffer flush — per-call cost is an unsorted-buffer push + a
+rare flush. ScoreHistogram is a bin-index + array increment,
+essentially free.
+
+## Drift detectors
+
+| Workload                                   | Time    | Throughput |
+| ------------------------------------------ | ------- | ---------- |
+| `MetaDriftDetector::observe` (CUSUM)       | 7.9 ns  | ~126 M/s   |
+| `FeatureDriftDetector::observe` D=16/10bin | 90 ns   | ~11 M/s    |
+| `FeatureDriftDetector::psi()` D=16/10bin   | 1.17 µs | query-only |
+| `AdwinDetector::update` cap=4096           | 26.3 µs | ~38 k/s    |
+
+ADWIN's O(N) prefix-sum scan dominates at cap=4096. Caveat:
+most deployments use score-stream ADWIN, where "one update per
+alert" makes the 26 µs cost irrelevant. Per-packet ADWIN is
+**not** hot-path material — use `MetaDriftDetector` (8 ns) on
+the score stream instead.
+
+## SOC layer (clustering, calibration, ensemble)
+
+| Workload                                   | Time    | Throughput |
+| ------------------------------------------ | ------- | ---------- |
+| `LshAlertClusterer::hash_divector` D=16    | 189 ns  | ~5.3 M/s   |
+| `LshAlertClusterer::observe` D=16          | 212 ns  | ~4.7 M/s   |
+| `PotDetector::record` post-freeze          | 42 ns   | ~24 M/s    |
+| `PotDetector::p_value` post-freeze         | 8.2 ns  | ~120 M/s   |
+| `PlattCalibrator::fit` 2048 samples        | 765 µs  | offline    |
+| `PlattCalibrator::calibrate` single score  | 11.5 ns | ~87 M/s    |
+| `ensemble::fisher_combine` k=8             | 42 ns   | ~24 M/s    |
+| `ensemble::fisher_combine` k=32            | 158 ns  | ~6.3 M/s   |
+| `ensemble::fisher_combine` k=128           | 644 ns  | ~1.5 M/s   |
+
+- **LSH clustering**: `observe` = `hash_divector` + HashMap
+  bucket increment. Hash dominates (189 ns of 212 ns).
+- **SPOT p_value** is ~5× faster than `record`: recording
+  updates the tdigest + Welford peak stats; querying is a
+  closed-form GPD survival on cached γ, σ.
+- **Platt fit** is offline (one call per calibration window);
+  `calibrate` is 11 ns — σ(A·s + B) plus two floats.
+- **`fisher_combine` scales linearly** at ~5 ns per p-value
+  (Kahan-compensated sum + χ² survival tail).
+
+## Shingled forest
+
+`ShingledForest::update_scalar` + `score_scalar` on the
+embedded shingle (scalar stream → `D=16` sliding window):
+
+| Workload                                   | Time    |
+| ------------------------------------------ | ------- |
+| `update_scalar` + `score_scalar` D=16      | 93 µs   |
+
+≈ forest update (33 µs) + forest score (33 µs) + shingle ring
+push + allocator overhead. The ring-buffer shingle itself is
+free; the cost is the downstream forest ops on the embedded
+vector.
+
+## Dynamic dim + drift-aware wrappers
+
+| Workload                                       | Time   |
+| ---------------------------------------------- | ------ |
+| `DynamicForest::update` active=8 / MAX_D=16    | 21 µs  |
+| `DriftAwareForest::update` no shadow           | 22 µs  |
+| `DriftAwareForest::update` with active shadow  | 49 µs  |
+
+- **DynamicForest zero-pad overhead** is noise (21 µs vs 33 µs
+  native D=16 update) — the active-8 forest traverses shallower
+  trees, recovering the padding cost.
+- **DriftAwareForest no-shadow path** matches native forest
+  (22 µs ≈ native update), confirming the wrapper has no
+  always-on cost.
+- **With active shadow**: 2.2× overhead as expected — primary
+  and shadow run sequentially in the same thread at bench time.
+
+## SAGE Shapley attribution
+
+`SageEstimator::explain` D=16, K=64 permutations (≈1024 forest
+scores per explain call):
+
+| Workload                                       | Time     |
+| ---------------------------------------------- | -------- |
+| `SageEstimator::explain` D=16, K=64, `(50, 128)` | 17.9 ms |
+
+Per-probe cost scales as `K · D × forest_score_cost`. SOC
+triage / forensic replay territory, **not** per-alert real-time.
 
 ## External baselines (synthetic)
 

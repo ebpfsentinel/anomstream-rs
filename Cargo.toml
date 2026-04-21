@@ -66,5 +66,9 @@ harness = false
 name = "extended"
 harness = false
 
+[[bench]]
+name = "modules"
+harness = false
+
 [profile.release]
 overflow-checks = true
