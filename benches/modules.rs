@@ -21,9 +21,9 @@ use rand_chacha::ChaCha8Rng;
 use rcf_rs::{
     AdwinDetector, CountMinSketch, CusumConfig, DiVector, DriftAwareForest, DriftRecoveryConfig,
     DynamicForest, FeatureDriftDetector, ForestBuilder, LshAlertClusterer, MetaDriftDetector,
-    NormStrategy, Normalizer, OnlineStats, PlattCalibrator, PlattFitConfig, PotDetector,
-    SageEstimator, ScoreHistogram, ShingledForestBuilder, TDigest, ensemble::fisher_combine,
-    hot_path,
+    NormStrategy, Normalizer, OnlineStats, PerFeatureEwma, PerFeatureEwmaConfig, PlattCalibrator,
+    PlattFitConfig, PotDetector, SageEstimator, ScoreHistogram, ShingledForestBuilder, TDigest,
+    ensemble::fisher_combine, hot_path,
 };
 use std::hint::black_box;
 
@@ -610,6 +610,69 @@ fn bench_online_stats(c: &mut Criterion) {
     group.finish();
 }
 
+/// `PerFeatureEwma<D>` — parallel univariate EWMA z-score. Target:
+/// per-observation cost at `D=16` in two regimes — hot (warmed,
+/// returning z-scores) and cold (warming, no z-score math).
+fn bench_per_feature_ewma(c: &mut Criterion) {
+    let mut group = c.benchmark_group("per_feature_ewma");
+    let cfg = PerFeatureEwmaConfig { alpha: 0.1, warmup_samples: 32 };
+
+    group.bench_function("observe_warmed_d16", |b| {
+        let mut ewma: PerFeatureEwma<16> = PerFeatureEwma::new(cfg);
+        let mut rng = ChaCha8Rng::seed_from_u64(2026);
+        for _ in 0..256 {
+            let mut p = [0.0_f64; 16];
+            for slot in &mut p {
+                *slot = rng.random::<f64>() * 10.0;
+            }
+            ewma.observe(&p);
+        }
+        b.iter(|| {
+            let mut p = [0.0_f64; 16];
+            for slot in &mut p {
+                *slot = rng.random::<f64>() * 10.0;
+            }
+            let r = ewma.observe(black_box(&p));
+            black_box(r);
+        });
+    });
+
+    group.bench_function("observe_cold_d16", |b| {
+        b.iter(|| {
+            let mut ewma: PerFeatureEwma<16> = PerFeatureEwma::new(cfg);
+            let mut rng = ChaCha8Rng::seed_from_u64(7);
+            for _ in 0..16 {
+                let mut p = [0.0_f64; 16];
+                for slot in &mut p {
+                    *slot = rng.random::<f64>() * 10.0;
+                }
+                ewma.observe(black_box(&p));
+            }
+            black_box(&ewma);
+        });
+    });
+
+    group.bench_function("observe_spike_d16", |b| {
+        let mut ewma: PerFeatureEwma<16> = PerFeatureEwma::new(cfg);
+        let mut rng = ChaCha8Rng::seed_from_u64(2026);
+        for _ in 0..256 {
+            let mut p = [0.0_f64; 16];
+            for slot in &mut p {
+                *slot = rng.random::<f64>() * 10.0;
+            }
+            ewma.observe(&p);
+        }
+        let mut spike = [10.0_f64; 16];
+        spike[3] = 1_000.0;
+        b.iter(|| {
+            let r = ewma.observe(black_box(&spike));
+            black_box(r);
+        });
+    });
+
+    group.finish();
+}
+
 /// `Normalizer<D>` — per-feature min-max / z-score transform.
 /// Target: per-point transform cost at `D=16` (AWS-typical
 /// dim), plus the `fit` 2-pass cost on a 1024-sample batch.
@@ -724,6 +787,7 @@ criterion_group!(
     bench_sage,
     bench_online_stats,
     bench_count_min_sketch,
-    bench_normalize
+    bench_normalize,
+    bench_per_feature_ewma
 );
 criterion_main!(benches);
