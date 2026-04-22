@@ -21,8 +21,9 @@ use rand_chacha::ChaCha8Rng;
 use rcf_rs::{
     AdwinDetector, CountMinSketch, CusumConfig, DiVector, DriftAwareForest, DriftRecoveryConfig,
     DynamicForest, FeatureDriftDetector, ForestBuilder, LshAlertClusterer, MetaDriftDetector,
-    OnlineStats, PlattCalibrator, PlattFitConfig, PotDetector, SageEstimator, ScoreHistogram,
-    ShingledForestBuilder, TDigest, ensemble::fisher_combine, hot_path,
+    NormStrategy, Normalizer, OnlineStats, PlattCalibrator, PlattFitConfig, PotDetector,
+    SageEstimator, ScoreHistogram, ShingledForestBuilder, TDigest, ensemble::fisher_combine,
+    hot_path,
 };
 use std::hint::black_box;
 
@@ -609,6 +610,55 @@ fn bench_online_stats(c: &mut Criterion) {
     group.finish();
 }
 
+/// `Normalizer<D>` — per-feature min-max / z-score transform.
+/// Target: per-point transform cost at `D=16` (AWS-typical
+/// dim), plus the `fit` 2-pass cost on a 1024-sample batch.
+fn bench_normalize(c: &mut Criterion) {
+    let mut group = c.benchmark_group("normalize");
+
+    let mut rng = ChaCha8Rng::seed_from_u64(2026);
+    let samples: Vec<[f64; 16]> = (0..1024)
+        .map(|_| {
+            let mut p = [0.0_f64; 16];
+            for slot in &mut p {
+                *slot = rng.random::<f64>() * 100.0;
+            }
+            p
+        })
+        .collect();
+    let n_minmax = Normalizer::<16>::fit(NormStrategy::MinMax, &samples);
+    let n_zscore = Normalizer::<16>::fit(NormStrategy::ZScore, &samples);
+    let n_none = Normalizer::<16>::identity(NormStrategy::None);
+    let probe: [f64; 16] = core::array::from_fn(|_| rng.random::<f64>() * 100.0);
+
+    group.bench_function("transform_minmax_d16", |b| {
+        b.iter(|| {
+            let out = n_minmax.transform(black_box(&probe));
+            black_box(out);
+        });
+    });
+    group.bench_function("transform_zscore_d16", |b| {
+        b.iter(|| {
+            let out = n_zscore.transform(black_box(&probe));
+            black_box(out);
+        });
+    });
+    group.bench_function("transform_none_d16", |b| {
+        b.iter(|| {
+            let out = n_none.transform(black_box(&probe));
+            black_box(out);
+        });
+    });
+    group.bench_function("fit_minmax_1024x16", |b| {
+        b.iter(|| {
+            let n = Normalizer::<16>::fit(NormStrategy::MinMax, black_box(&samples));
+            black_box(n);
+        });
+    });
+
+    group.finish();
+}
+
 /// `CountMinSketch` — probabilistic frequency sketch. Target:
 /// per-call `increment` + `estimate` cost at AWS-typical size
 /// (`w=2048`, `d=4`), plus a saturation check so the hash-free
@@ -673,6 +723,7 @@ criterion_group!(
     bench_drift_aware,
     bench_sage,
     bench_online_stats,
-    bench_count_min_sketch
+    bench_count_min_sketch,
+    bench_normalize
 );
 criterion_main!(benches);
