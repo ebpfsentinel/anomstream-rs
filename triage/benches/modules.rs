@@ -8,7 +8,8 @@
 
 use anomstream_core::{AnomalyScore, DiVector, ForensicBaseline, ForestBuilder, RandomCutForest};
 use anomstream_triage::{
-    AlertRecord, LshAlertClusterer, PlattCalibrator, PlattFitConfig, SageEstimator,
+    AlertClusterer, AlertContext, AlertRecord, FeedbackLabel, FeedbackStore, LshAlertClusterer,
+    PlattCalibrator, PlattFitConfig, SageEstimator,
 };
 use criterion::{Criterion, criterion_group, criterion_main};
 use mimalloc::MiMalloc;
@@ -136,5 +137,116 @@ fn bench_sage(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_lsh_cluster, bench_calibrator, bench_sage);
+/// `AlertClusterer::observe` — cosine-similarity clustering.
+/// Target: per-record cost of the `observe` path (similarity
+/// scan + decision) under a typical 32-alert window.
+fn bench_alert_cluster(c: &mut Criterion) {
+    let mut group = c.benchmark_group("alert_cluster");
+
+    let mut forest: RandomCutForest<16> = ForestBuilder::<16>::new()
+        .num_trees(50)
+        .sample_size(128)
+        .seed(2026)
+        .build()
+        .expect("forest");
+    let mut rng = ChaCha8Rng::seed_from_u64(2026);
+    for _ in 0..512 {
+        let mut p = [0.0_f64; 16];
+        for slot in &mut p {
+            *slot = rng.random::<f64>();
+        }
+        forest.update(p).expect("update");
+    }
+
+    // Pre-build a pool of 64 varying records so consecutive observes
+    // mix between Joined (similar) and NewCluster (dissimilar) paths.
+    let records: Vec<AlertRecord<u32, 16>> = (0..64_u32)
+        .map(|i| {
+            let mut p = [0.0_f64; 16];
+            for (k, slot) in p.iter_mut().enumerate() {
+                let k_u32 = u32::try_from(k).unwrap_or(0);
+                *slot = rng.random::<f64>() + f64::from(i % 4) * f64::from(k_u32);
+            }
+            let ctx = AlertContext::<u32>::for_tenant(i, u64::from(i) * 1_000);
+            AlertRecord::from_forest(&forest, &p, &ctx).expect("rec")
+        })
+        .collect();
+
+    group.bench_function("observe_d16_window_32", |b| {
+        let mut clusterer: AlertClusterer<u32, 16> =
+            AlertClusterer::new(0.95, 60_000).expect("clusterer");
+        // Warm the window so observe exercises similarity scan.
+        for r in records.iter().take(16) {
+            let _ = clusterer.observe(r.clone());
+        }
+        let mut idx = 16;
+        b.iter(|| {
+            let r = records[idx % records.len()].clone();
+            idx += 1;
+            let d = clusterer.observe(black_box(r));
+            black_box(d);
+        });
+    });
+
+    group.finish();
+}
+
+/// `FeedbackStore::label` + `adjust` — SOC label ingestion and
+/// Gaussian-kernel score adjustment. Two variants: hot-path
+/// `adjust` cost (every probe), warm-up `label` cost (analyst
+/// cadence, much rarer).
+fn bench_feedback(c: &mut Criterion) {
+    let mut group = c.benchmark_group("feedback");
+    let mut rng = ChaCha8Rng::seed_from_u64(2026);
+
+    // Warm store with 256 benign + 256 confirmed labels spread
+    // across the unit cube so `adjust` walks a full kernel sum.
+    let labelled: Vec<([f64; 16], FeedbackLabel)> = (0..512)
+        .map(|i| {
+            let mut p = [0.0_f64; 16];
+            for slot in &mut p {
+                *slot = rng.random::<f64>();
+            }
+            let label = if i % 2 == 0 {
+                FeedbackLabel::Benign
+            } else {
+                FeedbackLabel::Confirmed
+            };
+            (p, label)
+        })
+        .collect();
+
+    group.bench_function("label_hot_capacity_256", |b| {
+        let mut store: FeedbackStore<16> = FeedbackStore::new(256, 1.0, 1.0).expect("fb");
+        let mut i = 0_usize;
+        b.iter(|| {
+            let (p, lab) = labelled[i % labelled.len()];
+            i += 1;
+            let _ = store.label(black_box(p), black_box(lab));
+        });
+    });
+
+    group.bench_function("adjust_hot_512_labels", |b| {
+        let mut store: FeedbackStore<16> = FeedbackStore::new(1024, 1.0, 1.0).expect("fb");
+        for (p, lab) in &labelled {
+            let _ = store.label(*p, *lab);
+        }
+        let probe: [f64; 16] = core::array::from_fn(|_| rng.random::<f64>());
+        b.iter(|| {
+            let adjusted = store.adjust(black_box(&probe), black_box(1.5_f64));
+            black_box(adjusted);
+        });
+    });
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_lsh_cluster,
+    bench_calibrator,
+    bench_sage,
+    bench_alert_cluster,
+    bench_feedback
+);
 criterion_main!(benches);

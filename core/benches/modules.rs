@@ -16,10 +16,10 @@
 
 use anomstream_core::{
     AdwinDetector, CountMinSketch, CusumConfig, DriftAwareForest, DriftRecoveryConfig,
-    DynamicForest, FeatureDriftDetector, ForestBuilder, MetaDriftDetector, NormStrategy,
-    Normalizer, OnlineStats, PerFeatureCusum, PerFeatureCusumConfig, PerFeatureEwma,
-    PerFeatureEwmaConfig, PotDetector, ScoreHistogram, ShingledForestBuilder, TDigest,
-    ensemble::fisher_combine,
+    DynamicForest, FeatureDriftDetector, FeatureGroups, ForestBuilder, MetaDriftDetector,
+    NormStrategy, Normalizer, OnlineStats, PerFeatureCusum, PerFeatureCusumConfig, PerFeatureEwma,
+    PerFeatureEwmaConfig, PotDetector, RandomCutForest, ScoreHistogram, ShingledForestBuilder,
+    TDigest, ensemble::fisher_combine,
 };
 use criterion::{Criterion, criterion_group, criterion_main};
 use mimalloc::MiMalloc;
@@ -618,6 +618,183 @@ fn bench_count_min_sketch(c: &mut Criterion) {
     group.finish();
 }
 
+/// `FeatureGroups::group_scores` — per-group sum reduction over
+/// the per-dim `DiVector` with coverage calc. `D=16` split into
+/// three named groups mirroring the enterprise ML detection layer
+/// (rate / payload / cardinality).
+fn bench_group_scores(c: &mut Criterion) {
+    let mut group = c.benchmark_group("group_scores");
+    let mut forest: RandomCutForest<16> = ForestBuilder::<16>::new()
+        .num_trees(100)
+        .sample_size(256)
+        .seed(2026)
+        .build()
+        .expect("forest");
+    let mut rng = ChaCha8Rng::seed_from_u64(2026);
+    for _ in 0..1024 {
+        let mut p = [0.0_f64; 16];
+        for slot in &mut p {
+            *slot = rng.random::<f64>();
+        }
+        forest.update(p).expect("update");
+    }
+    let groups = FeatureGroups::builder()
+        .add("rate", [0_usize, 1, 2])
+        .add("payload", [3_usize, 4, 5, 6, 7])
+        .add("cardinality", [8_usize, 9, 10, 11, 12, 13, 14, 15])
+        .build()
+        .expect("groups");
+    let probe: [f64; 16] = core::array::from_fn(|_| rng.random::<f64>());
+
+    group.bench_function("from_forest_d16_3groups", |b| {
+        b.iter(|| {
+            let gs = forest.group_scores(black_box(&probe), &groups).expect("gs");
+            black_box(gs);
+        });
+    });
+
+    group.finish();
+}
+
+/// `AttributionStability::from_forest` — inter-tree dispersion
+/// scan. `O(num_trees · D)` per probe. Target: cost relative to
+/// plain `attribution()`.
+fn bench_attribution_stability(c: &mut Criterion) {
+    let mut group = c.benchmark_group("attribution_stability");
+    let mut forest: RandomCutForest<16> = ForestBuilder::<16>::new()
+        .num_trees(100)
+        .sample_size(256)
+        .seed(2026)
+        .build()
+        .expect("forest");
+    let mut rng = ChaCha8Rng::seed_from_u64(2026);
+    for _ in 0..1024 {
+        let mut p = [0.0_f64; 16];
+        for slot in &mut p {
+            *slot = rng.random::<f64>();
+        }
+        forest.update(p).expect("update");
+    }
+    let probe: [f64; 16] = core::array::from_fn(|_| rng.random::<f64>());
+
+    group.bench_function("from_forest_d16", |b| {
+        b.iter(|| {
+            let s = forest.attribution_stability(black_box(&probe)).expect("stab");
+            black_box(s);
+        });
+    });
+
+    group.finish();
+}
+
+/// `RandomCutForest::score_with_confidence` — mean + stderr over
+/// per-tree score dispersion. Always walks every tree (no early
+/// termination); dispersion is the whole point.
+fn bench_score_with_confidence(c: &mut Criterion) {
+    let mut group = c.benchmark_group("score_ci");
+    let mut forest: RandomCutForest<16> = ForestBuilder::<16>::new()
+        .num_trees(100)
+        .sample_size(256)
+        .seed(2026)
+        .build()
+        .expect("forest");
+    let mut rng = ChaCha8Rng::seed_from_u64(2026);
+    for _ in 0..1024 {
+        let mut p = [0.0_f64; 16];
+        for slot in &mut p {
+            *slot = rng.random::<f64>();
+        }
+        forest.update(p).expect("update");
+    }
+    let probe: [f64; 16] = core::array::from_fn(|_| rng.random::<f64>());
+
+    group.bench_function("single_probe_d16", |b| {
+        b.iter(|| {
+            let s = forest
+                .score_with_confidence(black_box(&probe))
+                .expect("score_ci");
+            black_box(s);
+        });
+    });
+
+    group.finish();
+}
+
+/// `RandomCutForest::bootstrap` — historical replay throughput.
+/// Measures the ingest rate when the forest is warm-filled from a
+/// pre-made batch (typical cold-start restart path).
+fn bench_bootstrap(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bootstrap");
+
+    group.bench_function("replay_4096_d16", |b| {
+        let mut rng = ChaCha8Rng::seed_from_u64(2026);
+        let points: Vec<[f64; 16]> = (0..4096)
+            .map(|_| {
+                let mut p = [0.0_f64; 16];
+                for slot in &mut p {
+                    *slot = rng.random::<f64>();
+                }
+                p
+            })
+            .collect();
+        b.iter(|| {
+            let mut forest: RandomCutForest<16> = ForestBuilder::<16>::new()
+                .num_trees(50)
+                .sample_size(128)
+                .seed(2026)
+                .build()
+                .expect("forest");
+            let r = forest.bootstrap(points.iter().copied()).expect("bootstrap");
+            black_box(r);
+        });
+    });
+
+    group.finish();
+}
+
+/// Persistence — `to_bytes` / `from_bytes` roundtrip throughput
+/// via postcard. Measures serialization cost on a warm forest
+/// (AWS default config) independent of I/O.
+#[cfg(all(feature = "postcard", feature = "serde"))]
+fn bench_persistence(c: &mut Criterion) {
+    let mut group = c.benchmark_group("persistence");
+    let mut forest: RandomCutForest<16> = ForestBuilder::<16>::new()
+        .num_trees(100)
+        .sample_size(256)
+        .seed(2026)
+        .build()
+        .expect("forest");
+    let mut rng = ChaCha8Rng::seed_from_u64(2026);
+    for _ in 0..1024 {
+        let mut p = [0.0_f64; 16];
+        for slot in &mut p {
+            *slot = rng.random::<f64>();
+        }
+        forest.update(p).expect("update");
+    }
+
+    group.bench_function("to_bytes_100t_256s_d16", |b| {
+        b.iter(|| {
+            let bytes = forest.to_bytes().expect("to_bytes");
+            black_box(bytes);
+        });
+    });
+
+    group.bench_function("from_bytes_100t_256s_d16", |b| {
+        let bytes = forest.to_bytes().expect("to_bytes");
+        b.iter(|| {
+            let f: RandomCutForest<16> =
+                RandomCutForest::from_bytes(black_box(&bytes)).expect("from_bytes");
+            black_box(f);
+        });
+    });
+
+    group.finish();
+}
+
+#[cfg(not(all(feature = "postcard", feature = "serde")))]
+fn bench_persistence(_: &mut Criterion) {}
+
 criterion_group!(
     benches,
     bench_shingled,
@@ -634,6 +811,11 @@ criterion_group!(
     bench_count_min_sketch,
     bench_normalize,
     bench_per_feature_ewma,
-    bench_per_feature_cusum
+    bench_per_feature_cusum,
+    bench_group_scores,
+    bench_attribution_stability,
+    bench_score_with_confidence,
+    bench_bootstrap,
+    bench_persistence
 );
 criterion_main!(benches);
