@@ -7,7 +7,8 @@
 //!
 //! Run: `cargo run --release --example feedback_adjust`
 
-use anomstream_core::{FeedbackLabel, FeedbackStore, ForestBuilder};
+use anomstream_core::ForestBuilder;
+use anomstream_triage::{FeedbackLabel, FeedbackStore};
 
 const D: usize = 4;
 

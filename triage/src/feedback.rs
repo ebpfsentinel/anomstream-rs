@@ -12,7 +12,7 @@
 //! # What this is (and is not)
 //!
 //! **Is**: a lightweight feedback-adjustment layer on top of a
-//! live [`crate::RandomCutForest`]. No retraining, no extra model,
+//! live [`anomstream_core::RandomCutForest`]. No retraining, no extra model,
 //! no mutation of the forest — the raw RCF score survives
 //! intact, the adjustment is an additive bias driven by the
 //! Gaussian-kernel-weighted contribution of every live label.
@@ -34,8 +34,8 @@
 
 use std::sync::Arc;
 
-use crate::error::{RcfError, RcfResult};
-use crate::metrics::{MetricsSink, default_sink, names};
+use anomstream_core::error::{RcfError, RcfResult};
+use anomstream_core::metrics::{MetricsSink, default_sink, names};
 
 /// Default kernel bandwidth. Smaller `sigma` → only near-duplicate
 /// labels influence the probe; larger `sigma` → every stored label
@@ -99,7 +99,7 @@ pub struct FeedbackStore<const D: usize> {
     /// sink on round-trip.
     #[cfg_attr(
         feature = "serde",
-        serde(skip, default = "crate::metrics::default_sink")
+        serde(skip, default = "anomstream_core::metrics::default_sink")
     )]
     metrics: Arc<dyn MetricsSink>,
 }
@@ -109,7 +109,10 @@ pub struct FeedbackStore<const D: usize> {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct LabelledPoint<const D: usize> {
     /// Feature vector at label time (after any upstream scaling).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::fixed_array_f64"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "anomstream_core::serde_util::fixed_array_f64")
+    )]
     point: [f64; D],
     /// SOC verdict.
     label: FeedbackLabel,

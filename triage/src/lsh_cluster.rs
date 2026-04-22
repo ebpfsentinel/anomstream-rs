@@ -23,9 +23,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::audit::AlertRecord;
-use crate::domain::DiVector;
-use crate::error::{RcfError, RcfResult};
-use crate::metrics::{MetricsSink, default_sink, names};
+use anomstream_core::domain::DiVector;
+use anomstream_core::error::{RcfError, RcfResult};
+use anomstream_core::metrics::{MetricsSink, default_sink, names};
 
 /// Number of quantisation buckets per per-dim attribution value.
 /// 16 buckets → 4 bits per dim, packed into the hash string.
@@ -260,8 +260,8 @@ impl LshAlertClusterer {
 mod tests {
     use super::*;
     use crate::audit::AlertRecord;
-    use crate::domain::{AnomalyScore, DiVector};
-    use crate::forensic::ForensicBaseline;
+    use anomstream_core::domain::{AnomalyScore, DiVector};
+    use anomstream_core::forensic::ForensicBaseline;
 
     fn record_with_di(di: DiVector) -> AlertRecord<u32, 4> {
         AlertRecord {

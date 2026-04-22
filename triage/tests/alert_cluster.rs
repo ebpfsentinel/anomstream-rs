@@ -3,8 +3,9 @@
 
 #![cfg(all(feature = "serde", feature = "postcard", feature = "serde_json"))]
 
-use anomstream_core::audit::{AlertContext, AlertRecord};
-use anomstream_core::{AlertClusterer, ClusterDecision, ForestBuilder};
+use anomstream_core::ForestBuilder;
+use anomstream_triage::audit::{AlertContext, AlertRecord};
+use anomstream_triage::{AlertClusterer, ClusterDecision};
 
 fn warm_forest() -> anomstream_core::RandomCutForest<4> {
     let mut f = ForestBuilder::<4>::new()

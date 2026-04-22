@@ -28,7 +28,8 @@
 //!
 //! ```
 //! # #[cfg(feature = "serde")] {
-//! use anomstream_core::{ForestBuilder, AlertClusterer, audit::{AlertRecord, AlertContext}};
+//! use anomstream_core::ForestBuilder;
+//! use anomstream_triage::{AlertClusterer, audit::{AlertRecord, AlertContext}};
 //!
 //! let mut forest = ForestBuilder::<4>::new()
 //!     .num_trees(50).sample_size(16).seed(42).build().unwrap();
@@ -56,8 +57,8 @@ use alloc::vec::Vec;
 use num_traits::Float;
 
 use crate::audit::AlertRecord;
-use crate::domain::{AnomalyScore, DiVector};
-use crate::error::{RcfError, RcfResult};
+use anomstream_core::domain::{AnomalyScore, DiVector};
+use anomstream_core::error::{RcfError, RcfResult};
 
 #[cfg(feature = "std")]
 use std::sync::Arc;
@@ -123,7 +124,7 @@ where
     clusters: Vec<AlertCluster<K, D>>,
     /// Pool-level metrics sink — every observe/prune emits to it.
     #[cfg(feature = "std")]
-    metrics: Arc<dyn crate::metrics::MetricsSink>,
+    metrics: Arc<dyn anomstream_core::metrics::MetricsSink>,
 }
 
 impl<K, const D: usize> core::fmt::Debug for AlertClusterer<K, D>
@@ -167,15 +168,18 @@ where
             window_ms,
             clusters: Vec::new(),
             #[cfg(feature = "std")]
-            metrics: crate::metrics::default_sink(),
+            metrics: anomstream_core::metrics::default_sink(),
         })
     }
 
-    /// Install a [`crate::MetricsSink`] — every `observe` / `prune`
+    /// Install a [`anomstream_core::MetricsSink`] — every `observe` / `prune`
     /// call emits counters / gauges into it.
     #[cfg(feature = "std")]
     #[must_use]
-    pub fn with_metrics_sink(mut self, sink: Arc<dyn crate::metrics::MetricsSink>) -> Self {
+    pub fn with_metrics_sink(
+        mut self,
+        sink: Arc<dyn anomstream_core::metrics::MetricsSink>,
+    ) -> Self {
         self.emit_active_gauge_on(&sink);
         self.metrics = sink;
         self
@@ -184,7 +188,7 @@ where
     /// Read-only handle to the installed sink.
     #[cfg(feature = "std")]
     #[must_use]
-    pub fn metrics_sink(&self) -> &Arc<dyn crate::metrics::MetricsSink> {
+    pub fn metrics_sink(&self) -> &Arc<dyn anomstream_core::metrics::MetricsSink> {
         &self.metrics
     }
 
@@ -225,7 +229,7 @@ where
     pub fn observe(&mut self, rec: AlertRecord<K, D>) -> ClusterDecision {
         #[cfg(feature = "std")]
         self.metrics
-            .inc_counter(crate::metrics::names::ALERTS_OBSERVED_TOTAL, 1);
+            .inc_counter(anomstream_core::metrics::names::ALERTS_OBSERVED_TOTAL, 1);
         self.prune_stale_internal(rec.timestamp_ms);
 
         // Find the best cluster to merge into.
@@ -251,8 +255,10 @@ where
                 cluster.contributing_tenants.push(rec.tenant.clone());
             }
             #[cfg(feature = "std")]
-            self.metrics
-                .inc_counter(crate::metrics::names::ALERT_CLUSTERS_JOINED_TOTAL, 1);
+            self.metrics.inc_counter(
+                anomstream_core::metrics::names::ALERT_CLUSTERS_JOINED_TOTAL,
+                1,
+            );
             ClusterDecision::Joined(i)
         } else {
             let ts = rec.timestamp_ms;
@@ -270,7 +276,7 @@ where
             #[cfg(feature = "std")]
             {
                 self.metrics
-                    .inc_counter(crate::metrics::names::ALERT_CLUSTERS_NEW_TOTAL, 1);
+                    .inc_counter(anomstream_core::metrics::names::ALERT_CLUSTERS_NEW_TOTAL, 1);
                 self.emit_active_gauge();
             }
             ClusterDecision::NewCluster(idx)
@@ -298,7 +304,7 @@ where
             let pruned = before.saturating_sub(self.clusters.len());
             if pruned > 0 {
                 self.metrics.inc_counter(
-                    crate::metrics::names::ALERT_CLUSTERS_PRUNED_TOTAL,
+                    anomstream_core::metrics::names::ALERT_CLUSTERS_PRUNED_TOTAL,
                     pruned as u64,
                 );
                 self.emit_active_gauge();
@@ -324,10 +330,10 @@ where
     /// Emit the resident-count gauge on an explicit sink — used by
     /// `with_metrics_sink` to stamp the initial value immediately.
     #[cfg(feature = "std")]
-    fn emit_active_gauge_on(&self, sink: &Arc<dyn crate::metrics::MetricsSink>) {
+    fn emit_active_gauge_on(&self, sink: &Arc<dyn anomstream_core::metrics::MetricsSink>) {
         #[allow(clippy::cast_precision_loss)]
         sink.set_gauge(
-            crate::metrics::names::ALERT_CLUSTERS_ACTIVE,
+            anomstream_core::metrics::names::ALERT_CLUSTERS_ACTIVE,
             self.clusters.len() as f64,
         );
     }
@@ -365,10 +371,10 @@ fn cosine_similarity(a: &DiVector, b: &DiVector) -> f64 {
 #[allow(clippy::unwrap_used, clippy::panic, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use crate::ForestBuilder;
     use crate::audit::AlertContext;
+    use anomstream_core::ForestBuilder;
 
-    fn warm_forest(seed: u64) -> crate::RandomCutForest<4> {
+    fn warm_forest(seed: u64) -> anomstream_core::RandomCutForest<4> {
         let mut f = ForestBuilder::<4>::new()
             .num_trees(50)
             .sample_size(16)
@@ -382,7 +388,11 @@ mod tests {
         f
     }
 
-    fn rec(forest: &crate::RandomCutForest<4>, p: [f64; 4], ts: u64) -> AlertRecord<String, 4> {
+    fn rec(
+        forest: &anomstream_core::RandomCutForest<4>,
+        p: [f64; 4],
+        ts: u64,
+    ) -> AlertRecord<String, 4> {
         let ctx = AlertContext::<String>::for_tenant("t1".into(), ts);
         AlertRecord::from_forest(forest, &p, &ctx).unwrap()
     }

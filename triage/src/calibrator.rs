@@ -5,7 +5,7 @@
 //!
 //! # Why calibration
 //!
-//! The raw [`crate::AnomalyScore`] is unbounded and its scale shifts
+//! The raw [`anomstream_core::AnomalyScore`] is unbounded and its scale shifts
 //! with forest size, sample size, and point dimensionality — useful
 //! for ranking, awkward for audit reporting. A sigmoid calibrator
 //! fit on a labelled history set maps the raw score to a
@@ -41,7 +41,7 @@ use alloc::vec::Vec;
 #[allow(unused_imports)]
 use num_traits::Float;
 
-use crate::error::{RcfError, RcfResult};
+use anomstream_core::error::{RcfError, RcfResult};
 
 /// Default maximum Newton-Raphson iterations — well past the point
 /// of diminishing returns on the 2-parameter fit.

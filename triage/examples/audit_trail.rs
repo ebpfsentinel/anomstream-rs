@@ -8,8 +8,8 @@
 //!
 //! Run with `cargo run --example audit_trail --features postcard,serde_json`.
 
-use anomstream_core::audit::{AlertContext, AlertRecord};
 use anomstream_core::{ForestBuilder, RcfError, SeverityBands};
+use anomstream_triage::audit::{AlertContext, AlertRecord};
 
 fn main() -> Result<(), RcfError> {
     let mut forest = ForestBuilder::<4>::new()

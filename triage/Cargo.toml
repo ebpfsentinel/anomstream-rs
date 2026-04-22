@@ -15,10 +15,28 @@ categories = ["algorithms", "science"]
 workspace = true
 
 [features]
-default = ["std", "serde"]
-std = ["anomstream-core/std"]
-serde = ["anomstream-core/serde", "dep:serde"]
+default = ["std", "serde", "postcard"]
+std = ["anomstream-core/std", "rand/std", "rand/std_rng", "rand_chacha/std"]
+serde = ["anomstream-core/serde", "dep:serde", "rand_chacha/serde"]
+serde_json = ["serde", "anomstream-core/serde_json", "dep:serde_json"]
+postcard = ["serde", "anomstream-core/postcard", "dep:postcard"]
 
 [dependencies]
 anomstream-core = { workspace = true }
+num-traits = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
 serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+postcard = { workspace = true, optional = true }
+
+[dev-dependencies]
+anomstream-core = { workspace = true, features = ["std", "serde", "postcard", "parallel"] }
+criterion = { workspace = true }
+mimalloc = { workspace = true }
+rand = { workspace = true, features = ["std", "std_rng"] }
+rand_chacha = { workspace = true, features = ["std"] }
+
+[[bench]]
+name = "modules"
+harness = false

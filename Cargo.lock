@@ -67,7 +67,14 @@ name = "anomstream-triage"
 version = "0.0.0-dev"
 dependencies = [
  "anomstream-core",
+ "criterion",
+ "mimalloc",
+ "num-traits",
+ "postcard",
+ "rand",
+ "rand_chacha",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

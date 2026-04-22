@@ -12,7 +12,7 @@
 //!
 //! # Why this and not the per-dim attribution `DiVector`?
 //!
-//! The shipped [`crate::AttributionVisitor`] returns **marginal**
+//! The shipped [`anomstream_core::AttributionVisitor`] returns **marginal**
 //! per-dim contributions — `attribution[d] = ∂score/∂dim_d` along
 //! the forest's random-cut decomposition. Marginals ignore feature
 //! interactions; when two dims together signal an anomaly (packet
@@ -32,8 +32,8 @@
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use crate::error::{RcfError, RcfResult};
-use crate::forest::RandomCutForest;
+use anomstream_core::error::{RcfError, RcfResult};
+use anomstream_core::forest::RandomCutForest;
 
 /// Default number of Monte-Carlo permutations. Higher → tighter
 /// estimate at linear cost.
@@ -195,7 +195,7 @@ impl<const D: usize> SageEstimator<D> {
 )]
 mod tests {
     use super::*;
-    use crate::ForestBuilder;
+    use anomstream_core::ForestBuilder;
 
     fn train_forest<const D: usize>() -> RandomCutForest<D> {
         let mut f = ForestBuilder::<D>::new()

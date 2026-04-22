@@ -6,7 +6,8 @@
 
 #![cfg(feature = "std")]
 
-use anomstream_core::{FeedbackLabel, FeedbackStore, ForestBuilder};
+use anomstream_core::ForestBuilder;
+use anomstream_triage::{FeedbackLabel, FeedbackStore};
 
 fn small_forest() -> anomstream_core::RandomCutForest<2> {
     let mut f = ForestBuilder::<2>::new()

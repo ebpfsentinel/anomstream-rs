@@ -162,11 +162,8 @@ extern crate alloc;
 
 #[cfg(feature = "std")]
 pub mod adwin;
-pub mod alert_cluster;
 pub mod attribution_stability;
-pub mod audit;
 pub mod bootstrap;
-pub mod calibrator;
 pub mod config;
 #[cfg(feature = "std")]
 pub mod count_min_sketch;
@@ -180,16 +177,12 @@ pub mod early_term;
 pub mod ensemble;
 pub mod error;
 pub mod feature_drift;
-#[cfg(feature = "std")]
-pub mod feedback;
 pub mod forensic;
 pub mod forest;
 pub mod group_score;
 pub mod histogram;
 #[cfg(feature = "std")]
 pub mod hot_path;
-#[cfg(feature = "std")]
-pub mod lsh_cluster;
 pub mod meta_drift;
 pub mod metrics;
 pub mod normalize;
@@ -200,12 +193,10 @@ pub mod per_feature_ewma;
 pub mod persistence;
 #[cfg(feature = "std")]
 pub mod pool;
-#[cfg(feature = "std")]
-pub mod sage;
 pub mod sampler;
 pub mod score_ci;
 #[cfg(feature = "serde")]
-pub(crate) mod serde_util;
+pub mod serde_util;
 pub mod severity;
 #[cfg(feature = "std")]
 pub mod shingled;
@@ -220,11 +211,8 @@ pub mod visitor;
 pub use adwin::{
     AdwinDetector, DEFAULT_DELTA as ADWIN_DEFAULT_DELTA, DEFAULT_WINDOW_CAP as ADWIN_DEFAULT_WINDOW,
 };
-pub use alert_cluster::{AlertCluster, AlertClusterer, ClusterDecision};
 pub use attribution_stability::AttributionStability;
-pub use audit::{ALERT_RECORD_VERSION, AlertContext, AlertRecord};
 pub use bootstrap::BootstrapReport;
-pub use calibrator::{PlattCalibrator, PlattFitConfig};
 pub use config::{ForestBuilder, RcfConfig};
 #[cfg(feature = "std")]
 pub use count_min_sketch::CountMinSketch;
@@ -238,19 +226,12 @@ pub use early_term::{EarlyTermConfig, EarlyTermScore};
 pub use ensemble::{chi_squared_survival_even, fisher_combine};
 pub use error::{RcfError, RcfResult};
 pub use feature_drift::{DriftLevel, FeatureDriftDetector};
-#[cfg(feature = "std")]
-pub use feedback::{
-    DEFAULT_CAPACITY as FEEDBACK_DEFAULT_CAPACITY, DEFAULT_KERNEL_SIGMA as FEEDBACK_DEFAULT_SIGMA,
-    DEFAULT_STRENGTH as FEEDBACK_DEFAULT_STRENGTH, FeedbackLabel, FeedbackStore,
-};
 pub use forensic::ForensicBaseline;
 pub use forest::{ForestSnapshot, PointStore, RandomCutForest};
 pub use group_score::{FeatureGroup, FeatureGroups, FeatureGroupsBuilder, GroupScores};
 pub use histogram::{HistogramConfig, ScoreHistogram};
 #[cfg(feature = "std")]
 pub use hot_path::{PrefixRateCap, UpdateConsumer, UpdateProducer, UpdateSampler};
-#[cfg(feature = "std")]
-pub use lsh_cluster::{LshAlertClusterer, LshClusterDecision};
 pub use meta_drift::{CusumConfig, DriftKind, DriftVerdict, MetaDriftDetector};
 pub use metrics::{MetricsSink, NoopSink};
 pub use normalize::{NormParams, NormStrategy, Normalizer};
@@ -264,11 +245,6 @@ pub use per_feature_ewma::{
 };
 #[cfg(feature = "std")]
 pub use pool::{ReadinessSummary, TenantForestPool};
-#[cfg(feature = "std")]
-pub use sage::{
-    DEFAULT_PERMUTATIONS as SAGE_DEFAULT_PERMUTATIONS, DEFAULT_SEED as SAGE_DEFAULT_SEED,
-    SageEstimator, SageExplanation,
-};
 pub use sampler::{ReservoirSampler, SamplerOp};
 pub use score_ci::{DEFAULT_Z_FACTOR as DEFAULT_CI_Z_FACTOR, ScoreWithConfidence};
 pub use severity::{Severity, SeverityBands};

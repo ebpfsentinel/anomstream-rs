@@ -11,7 +11,8 @@
 //!
 //! ```
 //! # #[cfg(feature = "serde")] {
-//! use anomstream_core::{ForestBuilder, audit::{AlertRecord, AlertContext}};
+//! use anomstream_core::ForestBuilder;
+//! use anomstream_triage::audit::{AlertRecord, AlertContext};
 //!
 //! let mut forest = ForestBuilder::<4>::new()
 //!     .num_trees(50).sample_size(16).seed(42).build().unwrap();
@@ -35,12 +36,12 @@
 
 use alloc::string::String;
 
-use crate::domain::{AnomalyScore, DiVector};
-use crate::error::RcfResult;
-use crate::forensic::ForensicBaseline;
-use crate::forest::RandomCutForest;
-use crate::severity::{Severity, SeverityBands};
-use crate::thresholded::{AnomalyGrade, ThresholdedForest};
+use anomstream_core::domain::{AnomalyScore, DiVector};
+use anomstream_core::error::RcfResult;
+use anomstream_core::forensic::ForensicBaseline;
+use anomstream_core::forest::RandomCutForest;
+use anomstream_core::severity::{Severity, SeverityBands};
+use anomstream_core::thresholded::{AnomalyGrade, ThresholdedForest};
 
 /// Current `AlertRecord` schema version. Consumers reject payloads
 /// whose version falls outside the supported range so incompatible
@@ -111,7 +112,10 @@ where
     /// Unix-epoch milliseconds at which the observation occurred.
     pub timestamp_ms: u64,
     /// Raw observed point in caller coordinates.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::fixed_array_f64"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "anomstream_core::serde_util::fixed_array_f64")
+    )]
     pub point: [f64; D],
     /// Raw RCF score for `point`.
     pub score: AnomalyScore,
@@ -202,7 +206,7 @@ impl<K: Clone, const D: usize> AlertRecord<K, D> {
 #[allow(clippy::unwrap_used, clippy::panic, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use crate::{ForestBuilder, ThresholdedForestBuilder};
+    use anomstream_core::{ForestBuilder, ThresholdedForestBuilder};
 
     fn warm_forest() -> RandomCutForest<4> {
         let mut f = ForestBuilder::<4>::new()
