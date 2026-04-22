@@ -1,4 +1,4 @@
-//! Pure Rust Random Cut Forest for streaming anomaly detection.
+//! Streaming anomaly detection toolkit — Random Cut Forest plus companion primitives.
 //!
 //! `rcf-rs` implements the Random Cut Forest (RCF) algorithm from Guha et al.
 //! (ICML 2016) and is conformant with the
@@ -7,6 +7,15 @@
 //! range, anomaly score averaged across trees, and hyperparameter bounds
 //! matching the AWS reference (`feature_dim`, `num_trees`,
 //! `num_samples_per_tree`).
+//!
+//! Beyond the core forest, the crate ships a set of **companion
+//! primitives** — per-feature drift detectors, normalisers, streaming
+//! stats, frequency sketches — reused across detection pipelines so
+//! callers can compose `RandomCutForest` + `PerFeatureEwma` +
+//! `PerFeatureCusum` + `FeatureDriftDetector` + `Normalizer` + …
+//! without reimplementing the underlying math. The charter is
+//! strict: streaming multivariate anomaly primitives only; no
+//! protocol parsers, no ONNX runtimes, no IP-centric trackers.
 //!
 //! # Architecture
 //!
@@ -47,6 +56,27 @@
 //! (two-sided CUSUM change-point detector over the score stream).
 //! The `persistence` module is gated behind the `serde` feature;
 //! `pool` is gated behind `std`.
+//!
+//! # Companion primitives
+//!
+//! Reusable streaming primitives that compose with the forest:
+//!
+//! | Module | Purpose |
+//! |---|---|
+//! | [`online_stats`] | Welford streaming mean + variance |
+//! | [`count_min_sketch`] | Probabilistic frequency sketch (`std`-gated) |
+//! | [`normalize`] | `MinMax` / `ZScore` / `None` per-feature transforms |
+//! | [`per_feature_ewma`] | Parallel univariate EWMA z-score detector |
+//! | [`per_feature_cusum`] | Parallel two-sided CUSUM change-point detector |
+//! | [`severity`] | Ordinal severity bands + classification |
+//!
+//! The companion layer is policy-free — detectors return raw
+//! statistics (z-scores, CUSUM magnitudes, min-max transforms);
+//! callers map them to alert severity via [`SeverityBands`] or a
+//! custom rule. `per_feature_cusum` intentionally co-exists with
+//! [`meta_drift::MetaDriftDetector`] (scalar CUSUM on the score
+//! stream): use the per-feature variant for attribution, the
+//! meta variant for score-level regime change.
 //!
 //! # Example
 //!

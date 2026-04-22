@@ -1,42 +1,79 @@
 # rcf-rs
 
-Pure Rust Random Cut Forest for streaming anomaly detection.
+Streaming anomaly detection toolkit for Rust — Random Cut Forest
+(Guha et al. ICML 2016) plus a suite of companion primitives
+(per-feature drift, calibration, clustering, sketches, SOC triage)
+that compose into real detection pipelines.
 
-Implements the RCF algorithm from Guha et al. (ICML 2016) and powers
-the ML detection pipeline of the **eBPFsentinel Enterprise**
+Powers the ML detection pipeline of the **eBPFsentinel Enterprise**
 NDR agent.
 
 ## Scope
 
-`rcf-rs` is a focused implementation of the 2016 paper, not an
-attempt to match every feature of AWS's `randomcutforest-by-aws`
-port. Feature additions are driven by what eBPFsentinel Enterprise
-needs from its ML layer (streaming network anomaly detection, SOC
-triage, multi-tenant deployments) — not by AWS parity. Features
-well outside that scope (density estimation, forecasting,
-shingling, GLAD variant, near-neighbour list, …) are intentionally
-absent; the imputation concept is repurposed as a SOC-triage
+The core forest stays a focused implementation of the 2016 paper,
+not an attempt to match every feature of AWS's
+`randomcutforest-by-aws` port. Beyond the forest, the crate ships
+**companion primitives** reused across detectors — streaming stats,
+drift detectors, normalisers, frequency sketches — promoted from
+the enterprise layer so OSS consumers and downstream crates get
+them for free.
+
+Out of scope: protocol parsers, IP-centric trackers, ONNX / torch
+runtimes, rule synthesis, L7 intelligence. Features well outside
+the streaming-anomaly charter (density estimation, forecasting,
+GLAD variant, near-neighbour list, …) are intentionally absent —
+the imputation concept is repurposed as a SOC-triage
 `forensic_baseline` helper rather than a feature-completion
 `impute()` call.
 
-See [docs/features.md](docs/features.md) for the catalogue of
-optional modules on top of the bare forest (TRCF, tenant pool,
-`ShingledForest` for scalar-stream temporal anomaly detection,
-bootstrap, warm reload, group scores, attribution stability,
-forensic baseline, Platt calibrator (batch + online SGD),
-severity bands, alert clustering (cosine + LSH), audit trail,
-CUSUM meta-drift, ADWIN adaptive windowing, feature drift
-PSI/KL, t-digest streaming quantiles, score histogram,
-SPOT/DSPOT univariate Peaks-Over-Threshold, Fisher p-value
-combination, SOC-feedback ingestion (`FeedbackStore`),
-SAGE Shapley attribution, drift-aware shadow forest swap,
-runtime-dim `DynamicForest`, bulk batch scoring, timestamp
-retention, early termination, probe-based codisp scoring
-(mutating + batched + stateless drift-free variant), fused
-score + attribution single-walk, score confidence intervals,
-hot-path eBPF ingress primitives (`UpdateSampler` +
-`PrefixRateCap` + bounded MPSC channel for classifier/updater
-thread split), metrics sink, …).
+### Catalogue
+
+**Core forest layer**
+
+- `RandomCutForest<D>` — AWS-conformant aggregate root
+- `ThresholdedForest<D>` — adaptive threshold wrapper (TRCF)
+- `DynamicForest` / `ShingledForest` / `DriftAwareForest` — runtime-dim, scalar-stream temporal, and shadow-swap recovery variants
+- `TenantForestPool` — bounded per-tenant pool with LRU eviction
+
+**Companion primitives**
+
+- `OnlineStats` — Welford streaming mean + variance
+- `CountMinSketch` — probabilistic frequency sketch (std-gated)
+- `Normalizer<D>` — per-feature `MinMax` / `ZScore` / `None` transforms
+- `PerFeatureEwma<D>` — parallel univariate EWMA z-score detector
+- `PerFeatureCusum<D>` — parallel two-sided CUSUM change-point detector
+- `SeverityBands` / `Severity` — ordinal classification (shared SOC vocabulary)
+
+**Drift + scoring**
+
+- `MetaDriftDetector` — CUSUM on the score stream
+- `FeatureDriftDetector<D>` — PSI / KL drift on raw features
+- `AdwinDetector` — adaptive windowing
+- `PotDetector` — SPOT / DSPOT univariate Peaks-Over-Threshold
+- `fisher_combine` — Fisher p-value combination
+- `TDigest`, `ScoreHistogram` — streaming quantiles
+
+**Explain + triage**
+
+- `DiVector` + `FeatureGroups` — per-dim and per-group attribution
+- `SageEstimator<D>` — SAGE Shapley attribution
+- `PlattCalibrator` — batch + online-SGD probability calibration
+- `AttributionStability` — inter-tree dispersion + confidence
+
+**SOC + ops**
+
+- `AlertClusterer` / `LshAlertClusterer` — cosine + LSH alert dedup
+- `FeedbackStore` — SOC-label-driven score adjustment
+- `AuditRecord` — immutable alert envelope
+- `ForensicBaseline` — post-hoc distance-to-sample summary
+
+**Hot-path ingress**
+
+- `hot_path::UpdateSampler` / `PrefixRateCap` / `channel` — stride + hash + keyed sampler, 256-bucket atomic counter sketch, bounded MPSC channel for classifier/updater thread split
+- `MetricsSink` — pluggable telemetry (`NoopSink` + your own impl)
+
+See [docs/features.md](docs/features.md) for the full module
+catalogue with per-feature rationale.
 
 ## Quickstart
 
@@ -85,14 +122,16 @@ Details: [docs/conformance.md](docs/conformance.md).
 
 `default-features = false` drops the runtime layer (MPSC channel,
 tenant pool, drift-aware shadow swap, ADWIN, LSH clustering, SAGE,
-SPOT/DSPOT, feedback store, shingled forest, dynamic forest)
-and leaves the core forest + trees + reservoir sampler +
-thresholded layer + meta / feature drift detectors + t-digest
-+ alert clusterer + bootstrap + calibrator + forensic baseline
-+ audit record + severity bands running under `#![no_std]` with
-`alloc`. Transcendentals (`ln`, `sqrt`, `exp`, …) route through
-`num-traits` + `libm`; hashing-dependent code paths fall back
-to `alloc::collections::BTreeMap`.
+SPOT/DSPOT, feedback store, shingled forest, dynamic forest,
+`CountMinSketch`) and leaves the core forest + trees + reservoir
+sampler + thresholded layer + meta / feature drift detectors +
+t-digest + alert clusterer + bootstrap + calibrator + forensic
+baseline + audit record + severity bands + companion primitives
+(`OnlineStats`, `Normalizer<D>`, `PerFeatureEwma<D>`,
+`PerFeatureCusum<D>`) running under `#![no_std]` with `alloc`.
+Transcendentals (`ln`, `sqrt`, `exp`, …) route through `num-traits`
++ `libm`; hashing-dependent code paths fall back to
+`alloc::collections::BTreeMap`.
 
 ```toml
 [dependencies]
