@@ -679,7 +679,9 @@ fn bench_attribution_stability(c: &mut Criterion) {
 
     group.bench_function("from_forest_d16", |b| {
         b.iter(|| {
-            let s = forest.attribution_stability(black_box(&probe)).expect("stab");
+            let s = forest
+                .attribution_stability(black_box(&probe))
+                .expect("stab");
             black_box(s);
         });
     });

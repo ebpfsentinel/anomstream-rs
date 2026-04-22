@@ -1,21 +1,30 @@
 # Performance
 
 Criterion (`cargo bench`) — wall-clock mean point estimate,
-`mimalloc` pinned globally. Three bench files:
+`mimalloc` pinned globally. Five bench harnesses split across
+the workspace:
 
-- `benches/forest_throughput.rs` — core ops (insert, score,
+- `core/benches/forest_throughput.rs` — core ops (insert, score,
   attribution, codisp batched + loop).
-- `benches/extended.rs` — bulk, early-term, forensic, tenant,
+- `core/benches/extended.rs` — bulk, early-term, forensic, tenant,
   stateless codisp, thresholded process, delete.
-- `benches/modules.rs` — post-core modules: hot-path ingress,
-  shingled forest, t-digest / histogram, feature / meta drift,
-  ADWIN, LSH clustering, SPOT/DSPOT, Platt calibrator, Fisher
-  p-value combine, dynamic-dim forest, drift-aware shadow swap,
-  SAGE explanations.
+- `core/benches/modules.rs` — 20 groups: shingled forest, t-digest
+  / histogram, feature / meta drift, ADWIN, SPOT/DSPOT, Fisher,
+  dynamic-dim forest, drift-aware shadow swap, companion
+  primitives (OnlineStats / CountMinSketch / Normalizer /
+  PerFeatureEwma / PerFeatureCusum), and five explain / triage
+  extras (group_scores / attribution_stability / score_ci /
+  bootstrap / persistence).
+- `triage/benches/modules.rs` — LSH clustering, Platt calibration,
+  SAGE explanations, AlertClusterer (cosine), FeedbackStore.
+- `hotpath/benches/modules.rs` — UpdateSampler, PrefixRateCap,
+  bounded MPSC channel.
 
 ```bash
-cargo bench                                            # full
-cargo bench -- --sample-size 10 --measurement-time 2   # quick
+cargo bench --workspace                                                     # full
+cargo bench -p anomstream-core --bench modules                              # single crate harness
+cargo bench --workspace -- --sample-size 10 --measurement-time 2            # quick
+cargo bench -p anomstream-core --bench modules -- per_feature_ewma/         # single group
 ```
 
 ## Reference hardware
@@ -53,17 +62,17 @@ portable signal.
 `(trees=100, sample=256, D=16)`, single-seed warm run, `mimalloc`
 pinned, `--sample-size 50 --warm-up-time 3 --measurement-time 8`:
 
-| Workload                              | Time   | Throughput |
-| ------------------------------------- | ------ | ---------- |
-| `forest_update`                       | ~33 µs | ~30 k/s    |
-| `forest_score`                        | ~33 µs | ~30 k/s    |
-| `forest_attribution`                  | ~44 µs | ~23 k/s    |
-| `forest_score_and_attribution`        | ~46 µs | ~22 k/s    |
-| `forest_split_score_then_attribution` | ~76 µs | ~13 k/s    |
+| Workload                              | Time      | Throughput |
+| ------------------------------------- | --------- | ---------- |
+| `forest_update`                       | **34 µs** | ~29 k/s    |
+| `forest_score`                        | **34 µs** | ~29 k/s    |
+| `forest_attribution`                  | **45 µs** | ~22 k/s    |
+| `forest_score_and_attribution`        | **47 µs** | ~21 k/s    |
+| `forest_split_score_then_attribution` | **79 µs** | ~13 k/s    |
 
-The fused `score_and_attribution` walk is **~40 % faster** than
+The fused `score_and_attribution` walk is **~41 % faster** than
 calling `score` + `attribution` back-to-back (single traversal
-instead of two, `46 / 76 ≈ 0.61`). The fused bbox SIMD kernel
+instead of two, `47 / 79 ≈ 0.59`). The fused bbox SIMD kernel
 (`total_probability_of_cut`) saves one pass over `min`/`max` loads
 per internal node. Post split-typed-arena refactor (persistence
 v4) leaf arena memory is −90 % (~320 B → ~40 B per slot).
@@ -72,11 +81,11 @@ Other `(trees, samples, D)` tuples below:
 
 | Config           | `forest_update` | `forest_score` | `forest_attribution` |
 | ---------------- | --------------- | -------------- | -------------------- |
-| `(50, 128, 16)`  | ~26 µs          | ~25 µs         | —                    |
-| `(100, 256, 4)`  | ~28 µs          | ~30 µs         | ~34 µs               |
-| `(100, 256, 16)` | ~33 µs          | ~33 µs         | ~44 µs               |
-| `(100, 256, 64)` | ~92 µs          | ~41 µs         | ~88 µs               |
-| `(200, 512, 16)` | ~48 µs          | ~51 µs         | —                    |
+| `(50, 128, 16)`  | 29 µs           | 25 µs          | —                    |
+| `(100, 256, 4)`  | 29 µs           | 30 µs          | 35 µs                |
+| `(100, 256, 16)` | 34 µs           | 34 µs          | 45 µs                |
+| `(100, 256, 64)` | 104 µs          | 42 µs          | 88 µs                |
+| `(200, 512, 16)` | 55 µs           | 52 µs          | —                    |
 
 Criterion HTML report lives at `target/criterion/`.
 
@@ -86,9 +95,9 @@ Criterion HTML report lives at `target/criterion/`.
 
 | Batch size | `score_many` (parallel) | Serial loop | Speedup |
 | ---------- | ----------------------- | ----------- | ------- |
-| 64         | 537 µs                  | 2.10 ms     | 3.9×    |
-| 512        | 3.68 ms                 | 16.7 ms     | 4.5×    |
-| 4096       | 28.0 ms                 | 149 ms      | 5.3×    |
+| 64         | 360 µs                  | 2.11 ms     | 5.9×    |
+| 512        | 3.73 ms                 | 17.1 ms     | 4.6×    |
+| 4096       | 28.6 ms                 | 137 ms      | 4.8×    |
 
 ### Codisp batched scoring
 
@@ -98,8 +107,8 @@ root descent, rayon across trees:
 
 | Batch K | `score_codisp_many` | `score_codisp` loop | Speedup |
 | ------- | ------------------- | ------------------- | ------- |
-| 16      | 1.76 ms             | 2.36 ms             | 1.3×    |
-| 64      | 6.66 ms             | 9.39 ms             | 1.4×    |
+| 16      | 1.76 ms             | 2.39 ms             | 1.4×    |
+| 64      | 6.59 ms             | 9.58 ms             | 1.5×    |
 
 Gain caps at ~1.5× because insert/delete mutation phases still
 scale with `K × num_trees`; only the walk phase benefits from
@@ -139,11 +148,11 @@ threads contend rather than scale. Two avenues have been explored:
 
 | Path                                                       | Time    |
 | ---------------------------------------------------------- | ------- |
-| `score` (parallel ensemble)                                | 32 µs   |
-| `score_early_term` threshold=0.02 (tight)                  | 34 µs   |
-| `score_early_term` threshold=0.20 (loose, stops ~20 trees) | 4.82 µs |
+| `score` (parallel ensemble)                                | 33 µs   |
+| `score_early_term` threshold=0.02 (tight)                  | 36 µs   |
+| `score_early_term` threshold=0.20 (loose, stops ~20 trees) | 4.99 µs |
 
-Loose threshold → 6.7× speedup on baseline-dominated traffic;
+Loose threshold → 6.6× speedup on baseline-dominated traffic;
 tight threshold matches parallel `score` (sequential walk
 rarely short-circuits).
 
@@ -154,8 +163,8 @@ rarely short-circuits).
 | `(trees, samples, D)` | Time  |
 | --------------------- | ----- |
 | `(100, 256, 4)`       | 13 µs |
-| `(100, 256, 16)`      | 17 µs |
-| `(100, 1024, 16)`     | 65 µs |
+| `(100, 256, 16)`      | 16 µs |
+| `(100, 1024, 16)`     | 64 µs |
 
 Cost ≈ `O(live_points × D)` Welford sweep — `sample_size` ×4
 → ×4 time (close to linear on the current run), dim cost
@@ -168,16 +177,16 @@ pressure sets in).
 
 | N   | `similarity_matrix` | `score_across_tenants` | `most_similar_top5` |
 | --- | ------------------- | ---------------------- | ------------------- |
-| 32  | 33 µs               | 88 µs                  | 0.35 µs             |
-| 128 | 71 µs               | 314 µs                 | 1.09 µs             |
-| 512 | 604 µs              | 2.64 ms                | 4.58 µs             |
+| 32  | 37 µs               | 126 µs                 | 0.30 µs             |
+| 128 | 99 µs               | 470 µs                 | 1.12 µs             |
+| 512 | 586 µs              | 2.69 ms                | 5.01 µs             |
 
 Scaling `N=32→512` (16× tenants):
 
-- `similarity_matrix` O(N²) parallelised: ~18× (rayon fan-out
+- `similarity_matrix` O(N²) parallelised: ~16× (rayon fan-out
   hides quadratic until core saturation).
-- `score_across_tenants` O(N) parallelised: 30×.
-- `most_similar_top5` O(N·log k) bounded heap: 13×.
+- `score_across_tenants` O(N) parallelised: 21×.
+- `most_similar_top5` O(N·log k) bounded heap: 17×.
 
 ## Stateless codisp (frozen-baseline batched)
 
@@ -186,20 +195,20 @@ reservoir mutation, rayon across trees:
 
 | Workload                              | Time     |
 | ------------------------------------- | -------- |
-| `score_codisp_stateless` single probe | 22 µs    |
-| `score_codisp_stateless_many` k=16    | 76 µs    |
-| `score_codisp_stateless_many` k=64    | 228 µs   |
-| `score_codisp_stateless_many` k=256   | 786 µs   |
+| `score_codisp_stateless` single probe | 29 µs    |
+| `score_codisp_stateless_many` k=16    | 108 µs   |
+| `score_codisp_stateless_many` k=64    | 312 µs   |
+| `score_codisp_stateless_many` k=256   | 1.07 ms  |
 
 Key results:
 
-- **Stateless is ~1.5× faster than non-mutating `score()` single
-  probe** (22 µs vs 33 µs) — stored-cut walk skips the EMA /
+- **Stateless is ~1.1× faster than non-mutating `score()` single
+  probe** (29 µs vs 34 µs) — stored-cut walk skips the EMA /
   reservoir update cost that `score()` amortises into the
   shared forest state.
-- **Stateless batched beats mutating batched by ~29×**:
-  `score_codisp_many` @ k=64 lands at 6.66 ms (above, in the
-  throughput table), stateless @ k=64 at 228 µs. Mutating pays
+- **Stateless batched beats mutating batched by ~21×**:
+  `score_codisp_many` @ k=64 lands at 6.59 ms (above, in the
+  throughput table), stateless @ k=64 at 312 µs. Mutating pays
   per-probe insert + walk + delete and serialises on the
   reservoir; stateless parallelises cleanly. This ratio is
   why NAB evaluation dropped from 12.6 s → 1.09 s after
@@ -210,23 +219,23 @@ Key results:
 `ThresholdedForest::process` — one call per point, full
 pipeline (update + score + EMA + verdict):
 
-| Workload                      | Time   |
-| ----------------------------- | ------ |
-| `thresholded_process` `(100, 256, 16)` | 54 µs |
+| Workload                               | Time   |
+| -------------------------------------- | ------ |
+| `thresholded_process` `(100, 256, 16)` | 73 µs  |
 
-Approximately `update (33 µs) + score (33 µs) − fusion savings`,
-with the EMA/threshold logic rounding the sum down to ~54 µs.
+Approximately `update (34 µs) + score (34 µs)` plus EMA +
+tdigest + threshold logic — `73 µs ≈ 68 + 5` overhead.
 
 ## Forest delete
 
 `RandomCutForest::delete` — reservoir eviction + bbox teardown
 per tree. Measured via round-trip `update_indexed → delete`:
 
-| Workload                              | Time   |
-| ------------------------------------- | ------ |
-| `update_indexed + delete` `(100, 256, 16)` | 140 µs |
+| Workload                                   | Time   |
+| ------------------------------------------ | ------ |
+| `update_indexed + delete` `(100, 256, 16)` | 115 µs |
 
-~4× more expensive than an update alone — bbox recomputation
+~3.4× more expensive than an update alone — bbox recomputation
 up the path and split-arena slot release dominate. Pair with
 `update_indexed` when a probe-based workflow (e.g. codisp)
 needs to restore the reservoir; otherwise rely on the
@@ -239,28 +248,28 @@ nanosecond territory:
 
 | Workload                                           | Time     | Throughput |
 | -------------------------------------------------- | -------- | ---------- |
-| `UpdateSampler::accept_stride` keep=8              | 21 ns    | ~47 M/s    |
-| `UpdateSampler::accept_hash` (unkeyed) keep=8      | 11 ns    | ~90 M/s    |
-| `UpdateSampler::accept_hash` (keyed) keep=8        | 11 ns    | ~90 M/s    |
-| `PrefixRateCap::check_and_record` 100/1s           | 18 ns    | ~55 M/s    |
-| `channel::try_enqueue` cap=4096 (+ drain thread)   | 268 ns   | ~3.7 M/s   |
+| `UpdateSampler::accept_stride` keep=8              | 28 ns    | ~36 M/s    |
+| `UpdateSampler::accept_hash` (unkeyed) keep=8      | 14 ns    | ~73 M/s    |
+| `UpdateSampler::accept_hash` (keyed) keep=8        | 15 ns    | ~67 M/s    |
+| `PrefixRateCap::check_and_record` 100/1s           | 23 ns    | ~44 M/s    |
+| `channel::try_enqueue` cap=4096 (+ drain thread)   | 487 ns   | ~2.1 M/s   |
 
-- **Keyed vs unkeyed hash**: murmur-mix finaliser costs ~0.3 ns
+- **Keyed vs unkeyed hash**: murmur-mix finaliser costs ~1.2 ns
   — negligible vs the atomic fetch-add on the accepted/rejected
   counters.
 - **`accept_hash` faster than `accept_stride`**: skips the
   counter atomic; admission decision is a multiply + mod.
 - **Channel throughput** is bounded by the `sync_channel`
-  lock, not by try_send itself. 3.7 M/s per producer is more
+  lock, not by try_send itself. 2.1 M/s per producer is more
   than enough for typical TC/XDP hot paths (~1-10 M pkt/s at
-  10 Gbps).
+  10 Gbps, with multiple producer clones fanning out).
 
 ## Streaming quantiles / histograms
 
 | Workload                             | Time    | Throughput |
 | ------------------------------------ | ------- | ---------- |
-| `TDigest::record`                    | 44 ns   | ~23 M/s    |
-| `TDigest::quantile(0.99)` after 100k | 58 ns   | query-only |
+| `TDigest::record`                    | 42 ns   | ~24 M/s    |
+| `TDigest::quantile(0.99)` after 100k | 57 ns   | query-only |
 | `ScoreHistogram::record` default     | 4.9 ns  | ~205 M/s   |
 
 TDigest amortises centroid compaction into the 10×-compression
@@ -272,8 +281,8 @@ essentially free.
 
 | Workload                                   | Time    | Throughput |
 | ------------------------------------------ | ------- | ---------- |
-| `MetaDriftDetector::observe` (CUSUM)       | 7.9 ns  | ~126 M/s   |
-| `FeatureDriftDetector::observe` D=16/10bin | 90 ns   | ~11 M/s    |
+| `MetaDriftDetector::observe` (CUSUM)       | 8.0 ns  | ~125 M/s   |
+| `FeatureDriftDetector::observe` D=16/10bin | 85 ns   | ~12 M/s    |
 | `FeatureDriftDetector::psi()` D=16/10bin   | 1.17 µs | query-only |
 | `AdwinDetector::update` cap=4096           | 26.3 µs | ~38 k/s    |
 
@@ -285,27 +294,36 @@ the score stream instead.
 
 ## SOC layer (clustering, calibration, ensemble)
 
-| Workload                                   | Time    | Throughput |
-| ------------------------------------------ | ------- | ---------- |
-| `LshAlertClusterer::hash_divector` D=16    | 189 ns  | ~5.3 M/s   |
-| `LshAlertClusterer::observe` D=16          | 212 ns  | ~4.7 M/s   |
-| `PotDetector::record` post-freeze          | 42 ns   | ~24 M/s    |
-| `PotDetector::p_value` post-freeze         | 8.2 ns  | ~120 M/s   |
-| `PlattCalibrator::fit` 2048 samples        | 765 µs  | offline    |
-| `PlattCalibrator::calibrate` single score  | 11.5 ns | ~87 M/s    |
-| `ensemble::fisher_combine` k=8             | 42 ns   | ~24 M/s    |
-| `ensemble::fisher_combine` k=32            | 158 ns  | ~6.3 M/s   |
-| `ensemble::fisher_combine` k=128           | 644 ns  | ~1.5 M/s   |
+| Workload                                    | Time    | Throughput |
+| ------------------------------------------- | ------- | ---------- |
+| `LshAlertClusterer::hash_divector` D=16     | 430 ns  | ~2.3 M/s   |
+| `LshAlertClusterer::observe` D=16           | 485 ns  | ~2.1 M/s   |
+| `AlertClusterer::observe` D=16 window=32    | 771 ns  | ~1.3 M/s   |
+| `PotDetector::record` post-freeze           | 43 ns   | ~23 M/s    |
+| `PotDetector::p_value` post-freeze          | 8.2 ns  | ~122 M/s   |
+| `PlattCalibrator::fit` 2048 samples         | 1.75 ms | offline    |
+| `PlattCalibrator::calibrate` single score   | 25.6 ns | ~39 M/s    |
+| `ensemble::fisher_combine` k=8              | 43 ns   | ~24 M/s    |
+| `ensemble::fisher_combine` k=32             | 161 ns  | ~6.2 M/s   |
+| `ensemble::fisher_combine` k=128            | 642 ns  | ~1.6 M/s   |
+| `FeedbackStore::label` capacity=256         | 571 ns  | ~1.8 M/s   |
+| `FeedbackStore::adjust` 512 labels, D=16    | 8.6 µs  | ~116 k/s   |
 
 - **LSH clustering**: `observe` = `hash_divector` + HashMap
-  bucket increment. Hash dominates (189 ns of 212 ns).
+  bucket increment. Hash dominates (430 ns of 485 ns).
+- **Cosine `AlertClusterer`** 1.6× slower than LSH at window=32;
+  scan cost grows linearly with window size vs O(1) bucket lookup
+  for LSH. Prefer LSH at MSSP volume (>10k alerts/min).
 - **SPOT p_value** is ~5× faster than `record`: recording
   updates the tdigest + Welford peak stats; querying is a
   closed-form GPD survival on cached γ, σ.
 - **Platt fit** is offline (one call per calibration window);
-  `calibrate` is 11 ns — σ(A·s + B) plus two floats.
+  `calibrate` is 26 ns — σ(A·s + B) plus two floats.
 - **`fisher_combine` scales linearly** at ~5 ns per p-value
   (Kahan-compensated sum + χ² survival tail).
+- **FeedbackStore adjust** scales with stored label count
+  (Gaussian-kernel sum): 512 labels × 16 dims → 8.6 µs.
+  Label ingestion itself is 571 ns (single push + counter).
 
 ## Shingled forest
 
@@ -314,28 +332,27 @@ embedded shingle (scalar stream → `D=16` sliding window):
 
 | Workload                                   | Time    |
 | ------------------------------------------ | ------- |
-| `update_scalar` + `score_scalar` D=16      | 93 µs   |
+| `update_scalar` + `score_scalar` D=16      | 71 µs   |
 
-≈ forest update (33 µs) + forest score (33 µs) + shingle ring
-push + allocator overhead. The ring-buffer shingle itself is
-free; the cost is the downstream forest ops on the embedded
-vector.
+≈ forest update (34 µs) + forest score (34 µs) + shingle ring
+push. The ring-buffer shingle itself is free; the cost is the
+downstream forest ops on the embedded vector.
 
 ## Dynamic dim + drift-aware wrappers
 
 | Workload                                       | Time   |
 | ---------------------------------------------- | ------ |
-| `DynamicForest::update` active=8 / MAX_D=16    | 21 µs  |
-| `DriftAwareForest::update` no shadow           | 22 µs  |
-| `DriftAwareForest::update` with active shadow  | 49 µs  |
+| `DynamicForest::update` active=8 / MAX_D=16    | 32 µs  |
+| `DriftAwareForest::update` no shadow           | 34 µs  |
+| `DriftAwareForest::update` with active shadow  | 80 µs  |
 
-- **DynamicForest zero-pad overhead** is noise (21 µs vs 33 µs
+- **DynamicForest zero-pad overhead** is tiny (32 µs vs 34 µs
   native D=16 update) — the active-8 forest traverses shallower
-  trees, recovering the padding cost.
+  trees, recovering most of the padding cost.
 - **DriftAwareForest no-shadow path** matches native forest
-  (22 µs ≈ native update), confirming the wrapper has no
+  (34 µs = native update), confirming the wrapper has no
   always-on cost.
-- **With active shadow**: 2.2× overhead as expected — primary
+- **With active shadow**: 2.4× overhead as expected — primary
   and shadow run sequentially in the same thread at bench time.
 
 ## SAGE Shapley attribution
@@ -343,12 +360,90 @@ vector.
 `SageEstimator::explain` D=16, K=64 permutations (≈1024 forest
 scores per explain call):
 
-| Workload                                       | Time     |
-| ---------------------------------------------- | -------- |
-| `SageEstimator::explain` D=16, K=64, `(50, 128)` | 17.9 ms |
+| Workload                                         | Time     |
+| ------------------------------------------------ | -------- |
+| `SageEstimator::explain` D=16, K=64, `(50, 128)` | 40.3 ms  |
 
 Per-probe cost scales as `K · D × forest_score_cost`. SOC
 triage / forensic replay territory, **not** per-alert real-time.
+
+## Per-feature streaming detectors
+
+`D=16`, per-dim accumulators, no forest involvement. All four
+primitives come from the RCF-FW framework expansion (originally
+in enterprise ML, promoted to `anomstream-core` for OSS reuse).
+
+| Workload                                          | Time     | Throughput  |
+| ------------------------------------------------- | -------- | ----------- |
+| `OnlineStats::update` (Welford, hot)              | 5.6 ns   | ~180 M/s    |
+| `OnlineStats::update` (cold, 32-sample loop)      | 75 ns    | ~14 M/s     |
+| `OnlineStats::variance` read                      | 0.21 ns  | ~4.8 G/s    |
+| `OnlineStats::std_dev` read                       | 0.20 ns  | ~5.0 G/s    |
+| `Normalizer<16>::transform` MinMax                | 15.3 ns  | ~65 M/s     |
+| `Normalizer<16>::transform` ZScore                | 8.0 ns   | ~125 M/s    |
+| `Normalizer<16>::transform` None (identity)       | 3.5 ns   | ~286 M/s    |
+| `Normalizer<16>::fit` 1024 samples                | 6.5 µs   | per-batch   |
+| `CountMinSketch::increment` w=2048 d=4            | 65 ns    | ~15 M/s     |
+| `CountMinSketch::estimate` w=2048 d=4             | 61 ns    | ~16 M/s     |
+| `CountMinSketch::reset` w=2048 d=4                | 808 ns   | per-reset   |
+| `PerFeatureEwma<16>::observe` (warmed)            | 129 ns   | ~7.8 M/s    |
+| `PerFeatureEwma<16>::observe` (spike path)        | 96 ns    | ~10 M/s     |
+| `PerFeatureEwma<16>::observe` (cold/warmup)       | 1.50 µs  | batch-only  |
+| `PerFeatureCusum<16>::observe` below threshold    | 68 ns    | ~15 M/s     |
+| `PerFeatureCusum<16>::observe` alert trip         | 85 ns    | ~12 M/s     |
+| `PerFeatureCusum<16>::observe` stable ref         | 40 ns    | ~25 M/s     |
+
+Insights:
+
+- **OnlineStats variance/std_dev reads at 0.2 ns** — fully
+  inlined, dominated by a single divide. `update` at 5.6 ns
+  covers the full Welford recurrence (two subs, one mul, two
+  adds, one fdiv).
+- **Normalizer None (3.5 ns) = memcpy cost** — baseline for
+  the other strategies. MinMax (15 ns) adds the range clamp;
+  ZScore (8 ns) is between (no clamp, just centre + scale).
+- **CMS increment ≈ estimate** because both paths hash the
+  key twice over 4 rows → same cost. `reset` is a zero-fill
+  over 2048 × 4 × 8 B = 64 KiB → 808 ns ≈ 80 GiB/s memset
+  (hitting DRAM on the first pass; L3 for warm).
+- **PerFeatureEwma spike < warmed**: the zero-variance branch
+  (returns `f64::MAX` immediately) skips the sqrt — visible
+  in the 33 ns gap vs the warmed normal path.
+- **PerFeatureCusum stable ref (40 ns) < below threshold (68 ns)**:
+  stable skips the `max(0, …)` branches entirely once the
+  cumulative sums settle to zero.
+
+## Explain + triage additions
+
+Five post-RCF-FW bench groups added in RCF-WS.7 to close the
+coverage gap on the core surface:
+
+| Workload                                           | Time    |
+| -------------------------------------------------- | ------- |
+| `FeatureGroups::group_scores` D=16, 3 groups       | 39.0 µs |
+| `RandomCutForest::attribution_stability` D=16      | 55.4 µs |
+| `RandomCutForest::score_with_confidence` D=16      | 58.4 µs |
+| `RandomCutForest::bootstrap` 4096 pts, `(50, 128)` | 187.8 ms |
+| `RandomCutForest::to_bytes` `(100, 256, D=16)`     | 5.98 ms |
+| `RandomCutForest::from_bytes` `(100, 256, D=16)`   | 7.66 ms |
+
+- **`group_scores`** ≈ `attribution` + O(D) post-reduce; the
+  39 µs cost is essentially the attribution walk with a tiny
+  per-group sum at the end.
+- **`attribution_stability`** ≈ 1.2× `attribution`: walks the
+  forest once to collect per-tree DiVectors, folds per-dim
+  variance in a second pass. Cheaper than naive "run
+  attribution N times and variance the result".
+- **`score_with_confidence`** ≈ 1.7× `score`: same walk plus
+  per-tree score stddev accumulator. Always non-parallel
+  (stderr needs per-tree outputs in order).
+- **`bootstrap` 4096 pts / (50t × 128s, D=16)**: ~188 ms
+  → ~22 k pts/s on the reduced-size forest. Scales linearly
+  with point count; use `(100, 256)` config for a ~4× cost.
+- **Persistence roundtrip**: 6 ms to serialise a warmed
+  `(100, 256, D=16)` forest (2.6 MB payload at postcard's
+  compact encoding), 7.7 ms to deserialise (bincode tree
+  rehydration dominates the deserialise path).
 
 ## External baselines (synthetic)
 
