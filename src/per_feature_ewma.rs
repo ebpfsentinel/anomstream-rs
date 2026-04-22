@@ -124,10 +124,7 @@ pub struct PerFeatureEwmaResult<const D: usize> {
     /// can classify severity without scanning the full array.
     pub max_z: f64,
     /// Per-dimension z-scores; index matches the input vector.
-    #[cfg_attr(
-        feature = "serde",
-        serde(with = "crate::serde_util::fixed_array_f64")
-    )]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::fixed_array_f64"))]
     pub per_feature_z: [f64; D],
 }
 

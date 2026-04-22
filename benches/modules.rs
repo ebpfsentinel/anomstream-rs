@@ -21,9 +21,9 @@ use rand_chacha::ChaCha8Rng;
 use rcf_rs::{
     AdwinDetector, CountMinSketch, CusumConfig, DiVector, DriftAwareForest, DriftRecoveryConfig,
     DynamicForest, FeatureDriftDetector, ForestBuilder, LshAlertClusterer, MetaDriftDetector,
-    NormStrategy, Normalizer, OnlineStats, PerFeatureEwma, PerFeatureEwmaConfig, PlattCalibrator,
-    PlattFitConfig, PotDetector, SageEstimator, ScoreHistogram, ShingledForestBuilder, TDigest,
-    ensemble::fisher_combine, hot_path,
+    NormStrategy, Normalizer, OnlineStats, PerFeatureCusum, PerFeatureCusumConfig, PerFeatureEwma,
+    PerFeatureEwmaConfig, PlattCalibrator, PlattFitConfig, PotDetector, SageEstimator,
+    ScoreHistogram, ShingledForestBuilder, TDigest, ensemble::fisher_combine, hot_path,
 };
 use std::hint::black_box;
 
@@ -610,12 +610,62 @@ fn bench_online_stats(c: &mut Criterion) {
     group.finish();
 }
 
+/// `PerFeatureCusum<D>` — parallel two-sided CUSUM change-point
+/// detector. Target: per-observation cost at `D=16` in three
+/// regimes — below threshold (common), trip path (rare), and
+/// stable after reference seeded.
+fn bench_per_feature_cusum(c: &mut Criterion) {
+    let mut group = c.benchmark_group("per_feature_cusum");
+    let cfg = PerFeatureCusumConfig { slack: 0.5, threshold: 5.0 };
+
+    group.bench_function("observe_below_threshold_d16", |b| {
+        let mut det: PerFeatureCusum<16> = PerFeatureCusum::new(cfg);
+        let mut rng = ChaCha8Rng::seed_from_u64(2026);
+        det.observe(&[10.0_f64; 16]); // seed refs
+        b.iter(|| {
+            let mut p = [10.0_f64; 16];
+            for slot in &mut p {
+                *slot += rng.random::<f64>() * 0.1; // tiny wiggle, below slack
+            }
+            let r = det.observe(black_box(&p));
+            black_box(r);
+        });
+    });
+
+    group.bench_function("observe_alert_trip_d16", |b| {
+        let mut det: PerFeatureCusum<16> = PerFeatureCusum::new(cfg);
+        det.observe(&[10.0_f64; 16]);
+        // Warm the charts so every tick trips an alert.
+        for _ in 0..20 {
+            det.observe(&[15.0_f64; 16]);
+        }
+        b.iter(|| {
+            let r = det.observe(black_box(&[15.0_f64; 16]));
+            black_box(r);
+        });
+    });
+
+    group.bench_function("observe_stable_d16", |b| {
+        let mut det: PerFeatureCusum<16> = PerFeatureCusum::new(cfg);
+        det.observe(&[10.0_f64; 16]);
+        b.iter(|| {
+            let r = det.observe(black_box(&[10.0_f64; 16]));
+            black_box(r);
+        });
+    });
+
+    group.finish();
+}
+
 /// `PerFeatureEwma<D>` — parallel univariate EWMA z-score. Target:
 /// per-observation cost at `D=16` in two regimes — hot (warmed,
 /// returning z-scores) and cold (warming, no z-score math).
 fn bench_per_feature_ewma(c: &mut Criterion) {
     let mut group = c.benchmark_group("per_feature_ewma");
-    let cfg = PerFeatureEwmaConfig { alpha: 0.1, warmup_samples: 32 };
+    let cfg = PerFeatureEwmaConfig {
+        alpha: 0.1,
+        warmup_samples: 32,
+    };
 
     group.bench_function("observe_warmed_d16", |b| {
         let mut ewma: PerFeatureEwma<16> = PerFeatureEwma::new(cfg);
@@ -788,6 +838,7 @@ criterion_group!(
     bench_online_stats,
     bench_count_min_sketch,
     bench_normalize,
-    bench_per_feature_ewma
+    bench_per_feature_ewma,
+    bench_per_feature_cusum
 );
 criterion_main!(benches);

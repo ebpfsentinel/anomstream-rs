@@ -141,6 +141,7 @@ pub mod meta_drift;
 pub mod metrics;
 pub mod normalize;
 pub mod online_stats;
+pub mod per_feature_cusum;
 pub mod per_feature_ewma;
 #[cfg(feature = "serde")]
 pub mod persistence;
@@ -201,6 +202,10 @@ pub use meta_drift::{CusumConfig, DriftKind, DriftVerdict, MetaDriftDetector};
 pub use metrics::{MetricsSink, NoopSink};
 pub use normalize::{NormParams, NormStrategy, Normalizer};
 pub use online_stats::OnlineStats;
+pub use per_feature_cusum::{
+    DriftDirection, PerFeatureCusum, PerFeatureCusumAccumulator, PerFeatureCusumAlert,
+    PerFeatureCusumConfig, PerFeatureCusumResult,
+};
 pub use per_feature_ewma::{
     EwmaAccumulator, PerFeatureEwma, PerFeatureEwmaConfig, PerFeatureEwmaResult,
 };
