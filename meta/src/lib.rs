@@ -21,16 +21,67 @@
 //! implies `core`. Default feature set enables all three plus
 //! `std` / `parallel` / `serde` / `postcard` passthroughs.
 //!
-//! Populated fully in RCF-WS.5 with the per-member re-exports.
+//! # Consumer DX
+//!
+//! Core + triage are re-exported as glob imports under the crate
+//! root so consumers write one `use anomstream::*;` regardless of
+//! which layer they depend on:
+//!
+//! ```ignore
+//! use anomstream::{ForestBuilder, PerFeatureCusum, PerFeatureCusumConfig};
+//! #[cfg(feature = "triage")]
+//! use anomstream::{AlertClusterer, PlattCalibrator};
+//! #[cfg(feature = "hotpath")]
+//! use anomstream::hot_path::{PrefixRateCap, UpdateSampler};
+//! ```
+//!
+//! Hot-path primitives live under a [`hot_path`] submodule to
+//! preserve the `anomstream::hot_path::*` import path used by
+//! pre-workspace-split callers and to flag the opinionated nature
+//! of that layer.
+//!
+//! Sibling member namespaces also stay accessible verbatim via
+//! [`core_lib`], [`triage_lib`], [`hotpath_lib`] when a consumer
+//! needs to spell a module path that the glob cannot disambiguate.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
 
+// -- Glob re-exports (flat DX) --
+
 #[cfg(feature = "core")]
-pub use anomstream_core as core;
+#[doc(inline)]
+pub use anomstream_core::*;
 
 #[cfg(feature = "triage")]
-pub use anomstream_triage as triage;
+#[doc(inline)]
+pub use anomstream_triage::*;
 
+/// eBPF-style ingress primitives (`UpdateSampler`, `PrefixRateCap`,
+/// `channel`) — re-exported as a submodule so the path
+/// `anomstream::hot_path::UpdateSampler` matches the pre-split
+/// `anomstream_core::hot_path::UpdateSampler` spelling.
 #[cfg(feature = "hotpath")]
-pub use anomstream_hotpath as hotpath;
+pub mod hot_path {
+    #[doc(inline)]
+    pub use anomstream_hotpath::*;
+}
+
+// -- Named namespaces (escape hatch for module-path reaches) --
+
+/// Direct access to the [`anomstream-core`] crate namespace for
+/// consumers that need the full module tree (`anomstream::core_lib::forest::*`,
+/// `anomstream::core_lib::serde_util::*`, …).
+#[cfg(feature = "core")]
+#[doc(inline)]
+pub use anomstream_core as core_lib;
+
+/// Direct access to the [`anomstream-triage`] crate namespace.
+#[cfg(feature = "triage")]
+#[doc(inline)]
+pub use anomstream_triage as triage_lib;
+
+/// Direct access to the [`anomstream-hotpath`] crate namespace.
+#[cfg(feature = "hotpath")]
+#[doc(inline)]
+pub use anomstream_hotpath as hotpath_lib;
