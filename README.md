@@ -1,64 +1,71 @@
 # anomstream-rs
 
-Streaming anomaly detection toolkit for Rust — Random Cut Forest
-(Guha et al. ICML 2016) plus a suite of companion primitives
-(per-feature drift, calibration, clustering, sketches, SOC triage)
-that compose into real detection pipelines.
+A composable Rust toolkit for **streaming anomaly detection**. Multiple detector families (multivariate, per-feature, score-level) plus the primitives needed to turn them into production pipelines — streaming stats, normalisation, probability calibration, alert clustering, feedback loops, SOC triage, hot-path ingress.
 
-Powers the ML detection pipeline of the **eBPFsentinel Enterprise**
-NDR agent.
+Among the detectors: an AWS-conformant Random Cut Forest implementation (Guha et al. ICML 2016) — one of several detector.
+
+Powers the ML detection pipeline of the **eBPFsentinel Enterprise** NDR agent; designed to be reused anywhere a stream of high-dim observations needs online scoring.
 
 ## Scope
 
-The core forest stays a focused implementation of the 2016 paper,
-not an attempt to match every feature of AWS's
-`randomcutforest-by-aws` port. Beyond the forest, the crate ships
-**companion primitives** reused across detectors — streaming stats,
-drift detectors, normalisers, frequency sketches — promoted from
-the enterprise layer so OSS consumers and downstream crates get
-them for free.
+**In scope** — streaming, bounded-memory, online-update primitives:
 
-Out of scope: protocol parsers, IP-centric trackers, ONNX / torch
-runtimes, rule synthesis, L7 intelligence. Features well outside
-the streaming-anomaly charter (density estimation, forecasting,
-GLAD variant, near-neighbour list, …) are intentionally absent —
-the imputation concept is repurposed as a SOC-triage
-`forensic_baseline` helper rather than a feature-completion
-`impute()` call.
+- Multivariate anomaly detection (Random Cut Forest and variants)
+- Per-feature drift detectors (EWMA z-score, two-sided CUSUM, PSI / KL)
+- Score-level drift + regime-change (meta CUSUM, ADWIN, SPOT / DSPOT)
+- Streaming stats + sketches (Welford `OnlineStats`, t-digest, histograms, Count-Min Sketch)
+- Normalisation (`Normalizer<D>` — min-max / z-score / identity)
+- Explanation + triage (per-dim attribution, SAGE Shapley, Platt calibration, severity bands, alert clustering, SOC feedback, audit trail, forensic baseline)
+- Hot-path ingress (sampler, rate cap, bounded MPSC channel, pluggable metrics sink)
+
+**Out of scope** — intentionally absent to keep the library focused:
+
+- Protocol parsers, IP-centric trackers, L7 intelligence
+- ONNX / torch runtimes, supervised model training
+- Rule synthesis, policy engines
+- Density estimation, forecasting, GLAD variant, near-neighbour list, feature-completion `impute()` (the RCF "imputation" idea is repurposed as a SOC-triage `forensic_baseline` helper).
+
+The Random Cut Forest implementation inside the toolkit is a focused port of the 2016 paper — not an attempt to match every feature of AWS's `randomcutforest-by-aws`.
 
 ### Catalogue
 
-**Core forest layer**
+**Multivariate anomaly detectors** — operate on the joint `[f64; D]` distribution
 
-- `RandomCutForest<D>` — AWS-conformant aggregate root
+- `RandomCutForest<D>` — AWS-conformant aggregate root (Guha 2016)
 - `ThresholdedForest<D>` — adaptive threshold wrapper (TRCF)
-- `DynamicForest` / `ShingledForest` / `DriftAwareForest` — runtime-dim, scalar-stream temporal, and shadow-swap recovery variants
-- `TenantForestPool` — bounded per-tenant pool with LRU eviction
+- `ShingledForest` — scalar-stream temporal wrapper over the forest
+- `DynamicForest` — runtime-dim variant
+- `DriftAwareForest` — shadow-swap recovery when a drift detector fires
+- `TenantForestPool` — bounded per-tenant forest pool with LRU eviction
 
-**Companion primitives**
+**Per-feature univariate detectors** — one accumulator per dimension, finds _which_ feature drifted
 
-- `OnlineStats` — Welford streaming mean + variance
-- `CountMinSketch` — probabilistic frequency sketch (std-gated)
-- `Normalizer<D>` — per-feature `MinMax` / `ZScore` / `None` transforms
 - `PerFeatureEwma<D>` — parallel univariate EWMA z-score detector
 - `PerFeatureCusum<D>` — parallel two-sided CUSUM change-point detector
-- `SeverityBands` / `Severity` — ordinal classification (shared SOC vocabulary)
+- `FeatureDriftDetector<D>` — PSI / KL distributional drift on raw features
 
-**Drift + scoring**
+**Score-level drift + regime change** — operate on a scalar anomaly-score stream
 
-- `MetaDriftDetector` — CUSUM on the score stream
-- `FeatureDriftDetector<D>` — PSI / KL drift on raw features
-- `AdwinDetector` — adaptive windowing
-- `PotDetector` — SPOT / DSPOT univariate Peaks-Over-Threshold
-- `fisher_combine` — Fisher p-value combination
-- `TDigest`, `ScoreHistogram` — streaming quantiles
+- `MetaDriftDetector` — two-sided CUSUM on the score stream
+- `AdwinDetector` — adaptive windowing (Bifet 2007)
+- `PotDetector` — SPOT / DSPOT univariate Peaks-Over-Threshold (Siffer 2017)
+- `fisher_combine` — combine `k` independent p-values into one test statistic
 
-**Explain + triage**
+**Streaming stats + sketches** — bounded-memory summaries reused across detectors
+
+- `OnlineStats` — Welford streaming mean + variance
+- `TDigest` — Dunning streaming quantile digest
+- `ScoreHistogram` — fixed-bin score histogram
+- `CountMinSketch` — probabilistic frequency sketch (std-gated)
+- `Normalizer<D>` — per-feature `MinMax` / `ZScore` / `None` transforms (with `fit(&[[f64; D]])` learner)
+
+**Explanation + triage**
 
 - `DiVector` + `FeatureGroups` — per-dim and per-group attribution
-- `SageEstimator<D>` — SAGE Shapley attribution
-- `PlattCalibrator` — batch + online-SGD probability calibration
 - `AttributionStability` — inter-tree dispersion + confidence
+- `SageEstimator<D>` — SAGE Shapley attribution (Covert 2020)
+- `PlattCalibrator` — batch + online-SGD probability calibration
+- `SeverityBands` / `Severity` — ordinal severity classification
 
 **SOC + ops**
 
@@ -69,13 +76,16 @@ the imputation concept is repurposed as a SOC-triage
 
 **Hot-path ingress**
 
-- `hot_path::UpdateSampler` / `PrefixRateCap` / `channel` — stride + hash + keyed sampler, 256-bucket atomic counter sketch, bounded MPSC channel for classifier/updater thread split
+- `hot_path::UpdateSampler` / `PrefixRateCap` / `channel` — stride - hash + keyed sampler, 256-bucket atomic counter sketch, bounded MPSC channel for classifier/updater thread split
 - `MetricsSink` — pluggable telemetry (`NoopSink` + your own impl)
 
-See [docs/features.md](docs/features.md) for the full module
-catalogue with per-feature rationale.
+See [docs/features.md](docs/features.md) for the full module catalogue with per-feature rationale.
 
 ## Quickstart
+
+Two examples — one per detector family — to show the toolkit is more than its forest.
+
+### Multivariate: Random Cut Forest
 
 ```rust,ignore
 use anomstream_rs::ForestBuilder;
@@ -96,42 +106,63 @@ for point in stream_of_points {
 # Ok::<(), anomstream_rs::RcfError>(())
 ```
 
-## Algorithm
+### Per-feature: two-sided CUSUM change-point
 
-Guha, Mishra, Roy, Schrijvers — *Robust Random Cut Forest Based
-Anomaly Detection on Streams*, ICML 2016.
+```rust,ignore
+use anomstream_rs::{PerFeatureCusum, PerFeatureCusumConfig};
 
-Reservoir sampling without replacement: Park, Ostrouchov, Samatova,
-Geist — SIAM SDM 2004.
+let mut det = PerFeatureCusum::<4>::new(PerFeatureCusumConfig {
+    slack: 0.5,
+    threshold: 5.0,
+});
 
-AWS `SageMaker` hyperparameter bounds are enforced at build time
-(`feature_dim`, `num_trees`, `num_samples_per_tree`, `time_decay`).
+for point in stream_of_points {
+    let result = det.observe(&point);
+    for alert in &result.alerts {
+        eprintln!(
+            "drift on feature {} ({:?}) magnitude {:.2}",
+            alert.feature_index, alert.direction, alert.magnitude
+        );
+    }
+}
+```
+
+The two detectors compose: feed the forest's scalar score into `MetaDriftDetector` for score-level regime change; run `PerFeatureCusum` alongside for per-feature attribution; wrap everything in `ThresholdedForest` for adaptive alerting.
+
+## Algorithms
+
+Each detector cites the paper it implements. Representative references by family:
+
+- **Random Cut Forest** — Guha, Mishra, Roy, Schrijvers, *Robust Random Cut Forest Based Anomaly Detection on Streams*, ICML 2016. Reservoir sampling without replacement: Park, Ostrouchov, Samatova, Geist — SIAM SDM 2004.
+- **EWMA** — Hunter, *The Exponentially Weighted Moving Average*, JQT 18(4), 1986.
+- **CUSUM** — Page, *Continuous Inspection Schemes*, Biometrika 41, 1954. Two-sided variant: Hawkins & Olwell, 1998.
+- **ADWIN** — Bifet, *Learning from Time-Changing Data with Adaptive Windowing*, SIAM SDM 2007.
+- **SPOT / DSPOT** — Siffer et al., *Anomaly Detection in Streams with Extreme Value Theory*, KDD 2017.
+- **t-digest** — Dunning, *Computing Extremely Accurate Quantiles using t-Digests*, 2019.
+- **Count-Min Sketch** — Cormode & Muthukrishnan, JoA 55(1), 2005.
+- **SAGE** — Covert, Lundberg, Lee, *Understanding Global Feature Contributions Through Additive Importance Measures*, NeurIPS 2020.
+- **Welford variance** — Welford, Technometrics 4(3), 1962.
+
+The Random Cut Forest implementation conforms to the AWS `SageMaker` hyperparameter bounds (`feature_dim`, `num_trees`, `num_samples_per_tree`, `time_decay`) — enforced at build time.
+
 Details: [docs/conformance.md](docs/conformance.md).
 
 ## Features
 
-| Cargo feature | Default | Role |
-|---|---|---|
-| `std` | ✅ | Standard library support |
-| `parallel` | ✅ | Per-tree / batch parallelism via `rayon` (implies `std`) |
-| `serde` | ✅ | State serialisation |
-| `postcard` | ✅ | Compact binary persistence (implies `serde`) |
-| `serde_json` | ❌ | JSON persistence (implies `serde`) |
+| Cargo feature | Default | Role                                                     |
+| ------------- | ------- | -------------------------------------------------------- |
+| `std`         | ✅      | Standard library support                                 |
+| `parallel`    | ✅      | Per-tree / batch parallelism via `rayon` (implies `std`) |
+| `serde`       | ✅      | State serialisation                                      |
+| `postcard`    | ✅      | Compact binary persistence (implies `serde`)             |
+| `serde_json`  | ❌      | JSON persistence (implies `serde`)                        |
 
 ### `no_std` + `alloc`
 
-`default-features = false` drops the runtime layer (MPSC channel,
-tenant pool, drift-aware shadow swap, ADWIN, LSH clustering, SAGE,
-SPOT/DSPOT, feedback store, shingled forest, dynamic forest,
-`CountMinSketch`) and leaves the core forest + trees + reservoir
-sampler + thresholded layer + meta / feature drift detectors +
-t-digest + alert clusterer + bootstrap + calibrator + forensic
-baseline + audit record + severity bands + companion primitives
-(`OnlineStats`, `Normalizer<D>`, `PerFeatureEwma<D>`,
-`PerFeatureCusum<D>`) running under `#![no_std]` with `alloc`.
-Transcendentals (`ln`, `sqrt`, `exp`, …) route through `num-traits`
-+ `libm`; hashing-dependent code paths fall back to
-`alloc::collections::BTreeMap`.
+`default-features = false` drops the runtime layer (MPSC channel, tenant pool, drift-aware shadow swap, ADWIN, LSH clustering, SAGE, SPOT/DSPOT, feedback store, shingled forest, dynamic forest, `CountMinSketch`) and leaves the core forest + trees + reservoir sampler + thresholded layer + meta / feature drift detectors +
+t-digest + alert clusterer + bootstrap + calibrator + forensic baseline + audit record + severity bands + companion primitives (`OnlineStats`, `Normalizer<D>`, `PerFeatureEwma<D>`, `PerFeatureCusum<D>`) running under `#![no_std]` with `alloc`. Transcendentals (`ln`, `sqrt`, `exp`, …) route through `num-traits`
+
+- `libm`; hashing-dependent code paths fall back to `alloc::collections::BTreeMap`.
 
 ```toml
 [dependencies]
@@ -140,13 +171,11 @@ anomstream-rs = { version = "…", default-features = false }
 anomstream-rs = { version = "…", default-features = false, features = ["serde"] }
 ```
 
-The `no_std` configuration is gated in CI (`cargo check
---no-default-features` + `--features serde`).
+The `no_std` configuration is gated in CI (`cargo check --no-default-features` + `--features serde`).
 
 ## Performance
 
-See [docs/performance.md](docs/performance.md) for the full
-criterion bench matrix.
+See [docs/performance.md](docs/performance.md) for the full criterion bench matrix.
 
 ## License
 
