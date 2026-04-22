@@ -1,17 +1,37 @@
-[package]
-name = "anomstream-rs"
+[workspace]
+resolver = "2"
+members = ["core", "triage", "hotpath", "meta"]
+
+[workspace.package]
 version = "0.0.0-dev"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
-description = "Streaming anomaly detection toolkit — Random Cut Forest plus companion primitives (per-feature EWMA / CUSUM, normalize, sketches)"
 repository = "https://github.com/maximewewer/anomstream-rs"
 homepage = "https://github.com/maximewewer/anomstream-rs"
-readme = "README.md"
-keywords = ["anomaly-detection", "streaming", "random-cut-forest", "drift-detection", "cusum"]
-categories = ["algorithms", "science", "data-structures"]
 
-[lints.clippy]
+[workspace.dependencies]
+# Internal members — path deps resolve within the workspace.
+anomstream-core = { version = "0.0.0-dev", path = "core", default-features = false }
+anomstream-triage = { version = "0.0.0-dev", path = "triage", default-features = false }
+anomstream-hotpath = { version = "0.0.0-dev", path = "hotpath", default-features = false }
+
+# External deps hoisted so every member pins the same version.
+thiserror = { version = "2", default-features = false }
+num-traits = { version = "0.2", default-features = false, features = ["libm"] }
+rand = { version = "0.9", default-features = false }
+rand_chacha = { version = "0.9", default-features = false }
+getrandom = { version = "0.3", default-features = false }
+wide = { version = "0.7", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1" }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+rayon = { version = "1" }
+criterion = { version = "0.8", default-features = false, features = ["plotters", "cargo_bench_support"] }
+proptest = { version = "1" }
+mimalloc = { version = "0.1", default-features = false }
+
+[workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
@@ -21,54 +41,9 @@ unimplemented = "deny"
 dbg_macro = "deny"
 unreachable = "warn"
 
-[lints.rust]
+[workspace.lints.rust]
 missing_docs = "warn"
 unsafe_code = "forbid"
-
-[features]
-default = ["std", "parallel", "serde", "postcard"]
-std = ["rand/std", "rand/std_rng", "rand_chacha/std", "getrandom/std", "thiserror/std"]
-serde = ["dep:serde", "rand_chacha/serde"]
-serde_json = ["dep:serde_json", "serde"]
-postcard = ["dep:postcard", "serde"]
-parallel = ["dep:rayon", "std"]
-
-[dependencies]
-thiserror = { version = "2", default-features = false }
-num-traits = { version = "0.2", default-features = false, features = ["libm"] }
-rand = { version = "0.9", default-features = false }
-rand_chacha = { version = "0.9", default-features = false }
-getrandom = { version = "0.3", default-features = false }
-wide = { version = "0.7", default-features = false }
-serde = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }
-serde_json = { version = "1", optional = true }
-postcard = { version = "1", default-features = false, features = ["alloc"], optional = true }
-rayon = { version = "1", optional = true }
-
-[dev-dependencies]
-criterion = { version = "0.8", default-features = false, features = ["plotters", "cargo_bench_support"] }
-proptest = "1"
-mimalloc = { version = "0.1", default-features = false }
-
-[[example]]
-name = "warm_reload"
-required-features = ["postcard", "std"]
-
-[[example]]
-name = "nab_ablation"
-required-features = ["serde_json"]
-
-[[bench]]
-name = "forest_throughput"
-harness = false
-
-[[bench]]
-name = "extended"
-harness = false
-
-[[bench]]
-name = "modules"
-harness = false
 
 [profile.release]
 overflow-checks = true

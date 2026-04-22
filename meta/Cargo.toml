@@ -1,0 +1,31 @@
+[package]
+name = "anomstream"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Streaming anomaly detection toolkit — Random Cut Forest, per-feature drift, streaming sketches, SOC triage, hot-path ingress. Facade re-export of anomstream-core / anomstream-triage / anomstream-hotpath."
+readme = "../README.md"
+keywords = ["anomaly-detection", "streaming", "random-cut-forest", "drift-detection", "cusum"]
+categories = ["algorithms", "science", "data-structures"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["core", "triage", "hotpath", "std", "parallel", "serde", "postcard"]
+core = ["dep:anomstream-core"]
+triage = ["dep:anomstream-triage", "core"]
+hotpath = ["dep:anomstream-hotpath", "core"]
+std = ["anomstream-core?/std", "anomstream-triage?/std", "anomstream-hotpath?/std"]
+parallel = ["anomstream-core?/parallel"]
+serde = ["anomstream-core?/serde", "anomstream-triage?/serde"]
+postcard = ["anomstream-core?/postcard"]
+serde_json = ["anomstream-core?/serde_json"]
+
+[dependencies]
+anomstream-core = { workspace = true, optional = true }
+anomstream-triage = { workspace = true, optional = true }
+anomstream-hotpath = { workspace = true, optional = true }

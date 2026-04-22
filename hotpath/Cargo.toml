@@ -1,0 +1,23 @@
+[package]
+name = "anomstream-hotpath"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "High-cadence ingress primitives (UpdateSampler, PrefixRateCap, bounded MPSC channel) for eBPF-style classifier/updater thread splits on top of anomstream-core"
+readme = "../README.md"
+keywords = ["anomaly-detection", "ebpf", "streaming", "sampler", "rate-limit"]
+categories = ["algorithms", "network-programming"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["std"]
+std = ["anomstream-core/std"]
+
+[dependencies]
+anomstream-core = { workspace = true }
+getrandom = { workspace = true }
