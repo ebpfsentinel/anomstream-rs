@@ -22,7 +22,7 @@ use std::thread;
 use std::time::Duration;
 
 use anomstream_core::ForestBuilder;
-use anomstream_core::hot_path::{UpdateSampler, channel};
+use anomstream_hotpath::{UpdateSampler, channel};
 
 const D: usize = 16;
 

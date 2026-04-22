@@ -59,7 +59,11 @@ name = "anomstream-hotpath"
 version = "0.0.0-dev"
 dependencies = [
  "anomstream-core",
+ "criterion",
  "getrandom 0.3.4",
+ "mimalloc",
+ "rand",
+ "rand_chacha",
 ]
 
 [[package]]

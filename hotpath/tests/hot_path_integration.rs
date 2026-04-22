@@ -16,7 +16,7 @@
 //!   same accept/reject decision across clones of the sampler,
 //!   so the per-flow admission ratio is stable.
 
-#![cfg(all(feature = "std", feature = "parallel"))]
+#![cfg(feature = "std")]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,7 +24,7 @@ use std::thread;
 use std::time::Duration;
 
 use anomstream_core::ForestBuilder;
-use anomstream_core::hot_path::{UpdateSampler, channel};
+use anomstream_hotpath::{UpdateSampler, channel};
 
 const D: usize = 8;
 

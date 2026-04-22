@@ -10,7 +10,7 @@
 //! number rather than a disappearing line of code.
 //!
 //! Run with `cargo bench --bench modules` or
-//! `cargo bench --bench modules -- hot_path/` for one group.
+//! `cargo bench --bench modules -- shingled/` for one group.
 
 #![allow(clippy::cast_precision_loss)]
 
@@ -19,7 +19,7 @@ use anomstream_core::{
     DynamicForest, FeatureDriftDetector, ForestBuilder, MetaDriftDetector, NormStrategy,
     Normalizer, OnlineStats, PerFeatureCusum, PerFeatureCusumConfig, PerFeatureEwma,
     PerFeatureEwmaConfig, PotDetector, ScoreHistogram, ShingledForestBuilder, TDigest,
-    ensemble::fisher_combine, hot_path,
+    ensemble::fisher_combine,
 };
 use criterion::{Criterion, criterion_group, criterion_main};
 use mimalloc::MiMalloc;
@@ -29,88 +29,6 @@ use std::hint::black_box;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
-
-/// `hot_path::UpdateSampler` `accept_stride` + `accept_hash` +
-/// keyed `accept_hash` (murmur-mix secret). Target: per-packet
-/// overhead on the classifier hot path.
-fn bench_hot_path_sampler(c: &mut Criterion) {
-    let mut group = c.benchmark_group("hot_path_sampler");
-
-    group.bench_function("accept_stride_keep_8", |b| {
-        let s = hot_path::UpdateSampler::new(8);
-        b.iter(|| {
-            let v = s.accept_stride();
-            black_box(v);
-        });
-    });
-
-    group.bench_function("accept_hash_keep_8", |b| {
-        let s = hot_path::UpdateSampler::new(8);
-        let mut rng = ChaCha8Rng::seed_from_u64(2026);
-        b.iter(|| {
-            let h: u64 = rng.random();
-            let v = s.accept_hash(black_box(h));
-            black_box(v);
-        });
-    });
-
-    group.bench_function("accept_hash_keyed_keep_8", |b| {
-        let s = hot_path::UpdateSampler::new_keyed(8).expect("getrandom");
-        let mut rng = ChaCha8Rng::seed_from_u64(2026);
-        b.iter(|| {
-            let h: u64 = rng.random();
-            let v = s.accept_hash(black_box(h));
-            black_box(v);
-        });
-    });
-
-    group.finish();
-}
-
-/// `hot_path::PrefixRateCap::check_and_record` — 256-bucket
-/// atomic counter sketch + window roll. Lock-free, O(1).
-fn bench_hot_path_prefix_cap(c: &mut Criterion) {
-    let mut group = c.benchmark_group("hot_path_prefix_cap");
-
-    group.bench_function("check_and_record_100cap_1s", |b| {
-        let cap = hot_path::PrefixRateCap::new(100, 1_000);
-        let mut rng = ChaCha8Rng::seed_from_u64(2026);
-        let mut now_ms = 0_u64;
-        b.iter(|| {
-            let h: u64 = rng.random();
-            now_ms = now_ms.wrapping_add(1);
-            let v = cap.check_and_record(black_box(h), now_ms);
-            black_box(v);
-        });
-    });
-
-    group.finish();
-}
-
-/// `hot_path::channel` — bounded MPSC `try_enqueue` throughput
-/// with a background drain thread keeping the queue non-full.
-fn bench_hot_path_channel(c: &mut Criterion) {
-    let mut group = c.benchmark_group("hot_path_channel");
-
-    group.bench_function("try_enqueue_4096cap", |b| {
-        let (producer, consumer) = hot_path::channel::<16>(4096);
-        // Background drain thread — keeps the queue from saturating.
-        let drain = std::thread::spawn(move || while consumer.recv().is_some() {});
-        let mut rng = ChaCha8Rng::seed_from_u64(2026);
-        b.iter(|| {
-            let mut p = [0.0_f64; 16];
-            for slot in &mut p {
-                *slot = rng.random();
-            }
-            let ok = producer.try_enqueue(black_box(p));
-            black_box(ok);
-        });
-        drop(producer);
-        let _ = drain.join();
-    });
-
-    group.finish();
-}
 
 /// `ShingledForest::update_scalar` + `score_scalar` — ring-buffer
 /// push then forest score on the embedded shingle.
@@ -702,9 +620,6 @@ fn bench_count_min_sketch(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    bench_hot_path_sampler,
-    bench_hot_path_prefix_cap,
-    bench_hot_path_channel,
     bench_shingled,
     bench_tdigest,
     bench_histogram,
