@@ -8,14 +8,14 @@ the workspace:
   attribution, codisp batched + loop).
 - `core/benches/extended.rs` — bulk, early-term, forensic, tenant,
   stateless codisp, thresholded process, delete.
-- `core/benches/modules.rs` — 22 groups: shingled forest, t-digest
-  / histogram, feature / meta drift, ADWIN, SPOT/DSPOT, Fisher,
-  dynamic-dim forest, drift-aware shadow swap, companion
-  primitives (OnlineStats / CountMinSketch / HyperLogLog /
-  SpaceSaving / BloomFilter / Normalizer / PerFeatureEwma /
-  PerFeatureCusum), and five explain / triage extras
-  (group_scores / attribution_stability / score_ci / bootstrap /
-  persistence).
+- `core/benches/modules.rs` — 23 groups: shingled forest, matrix
+  profile (STOMP), t-digest / histogram, feature / meta drift,
+  ADWIN, SPOT/DSPOT, Fisher, dynamic-dim forest, drift-aware
+  shadow swap, companion primitives (OnlineStats / CountMinSketch
+  / HyperLogLog / SpaceSaving / BloomFilter / Normalizer /
+  PerFeatureEwma / PerFeatureCusum), and five explain / triage
+  extras (group_scores / attribution_stability / score_ci /
+  bootstrap / persistence).
 - `triage/benches/modules.rs` — LSH clustering, Platt calibration,
   SAGE explanations, AlertClusterer (cosine), FeedbackStore.
 - `hotpath/benches/modules.rs` — UpdateSampler, PrefixRateCap,
@@ -338,6 +338,31 @@ embedded shingle (scalar stream → `D=16` sliding window):
 ≈ forest update (34 µs) + forest score (34 µs) + shingle ring
 push. The ring-buffer shingle itself is free; the cost is the
 downstream forest ops on the embedded vector.
+
+## Matrix profile (STOMP)
+
+`MatrixProfile::compute` — exact batch time-series discord / motif
+via the diagonal dot-product recurrence. `O(n²)` time, `O(n)`
+memory.
+
+| Workload                                     | Time    |
+| -------------------------------------------- | ------- |
+| `compute` n=1024, window=32                  | 3.1 ms  |
+| `compute` n=2048, window=64                  | 12.3 ms |
+| `compute` n=4096, window=128                 | 49.3 ms |
+| `discord_topk(5)` cached n=2048, window=64   | 27.8 µs |
+
+- **Scaling matches `O(n²)`**: doubling `n` + doubling `m` raises
+  cost ~4× (`n=1024→2048` 3.1→12.3 ms; `n=2048→4096` 12.3→49.3 ms).
+  Window length affects only the first-column seed and the
+  per-row constant — the diagonal recurrence is `O(1)` per cell.
+- **`discord_topk(5)` is trivial** once the profile is cached
+  (one sort + exclusion-aware walk). Running STOMP up front is
+  the real cost; reuse the `MatrixProfile` for all downstream
+  queries.
+- Use as a forensic complement to `ShingledForest`: online path
+  flags a region, STOMP gives the exact shape-level discord
+  inside it.
 
 ## Dynamic dim + drift-aware wrappers
 

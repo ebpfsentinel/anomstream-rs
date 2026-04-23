@@ -185,6 +185,8 @@ pub mod group_score;
 pub mod histogram;
 #[cfg(feature = "std")]
 pub mod hyperloglog;
+#[cfg(feature = "std")]
+pub mod matrix_profile;
 pub mod meta_drift;
 pub mod metrics;
 pub mod normalize;
@@ -243,6 +245,8 @@ pub use hyperloglog::{
     DEFAULT_PRECISION as HLL_DEFAULT_PRECISION, HyperLogLog, MAX_PRECISION as HLL_MAX_PRECISION,
     MIN_PRECISION as HLL_MIN_PRECISION,
 };
+#[cfg(feature = "std")]
+pub use matrix_profile::{MIN_WINDOW as MATRIX_PROFILE_MIN_WINDOW, MatrixProfile};
 pub use meta_drift::{CusumConfig, DriftKind, DriftVerdict, MetaDriftDetector};
 pub use metrics::{MetricsSink, NoopSink};
 pub use normalize::{NormParams, NormStrategy, Normalizer};

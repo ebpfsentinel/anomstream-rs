@@ -143,6 +143,54 @@ Source: `src/shingled.rs`.
 Example: `examples/shingled.rs` (periodic sine baseline + three
 injected contextual anomalies — dwell / drop / frequency shift).
 
+### `MatrixProfile` — STOMP time-series discord / motif
+
+Batch complement to `ShingledForest`: where the shingled forest is
+online, approximate and tree-based, the matrix profile is offline,
+exact and distance-based. Given a univariate series `T[0..n]` and
+a window length `m`, STOMP computes `P[i]` = z-normalised
+Euclidean distance from `T[i..i+m]` to its nearest non-trivial
+neighbour (a small exclusion zone around `i` is skipped so
+near-duplicates of the query don't win). `argmax P` is the
+discord (least-similar subsequence — shape anomaly); `argmin P`
+is the motif (most-repeated shape).
+
+STOMP runs in `O(n²)` time with `O(n)` memory via the diagonal
+dot-product recurrence
+`QT[i, j] = QT[i-1, j-1] + T[i+m-1]·T[j+m-1] - T[i-1]·T[j-1]`,
+piggy-backing on pre-computed sliding means / standard deviations.
+Practical working set: 1 K samples at `m = 32` in ≈ 3 ms; 4 K at
+`m = 128` in ≈ 49 ms on a modern core. Use it to confirm /
+localise a shape anomaly flagged by the online path, or to scan
+a captured rolling window when exactness matters more than latency.
+
+Default exclusion zone is `ceil(window / 4)` — the standard
+matrix-profile convention.
+
+Gated behind `std`.
+
+API: `compute(series, window, exclusion_zone)` (the `None` default
+picks the convention above) + `discord() -> (usize, f64)` +
+`discord_topk(k) -> Vec<(usize, f64)>` (exclusion-aware
+suppression so multiple emitted positions cannot cluster inside
+one anomalous region) + `motif() -> (usize, f64)` + `profile()` /
+`profile_index()` accessors + `window` / `exclusion_zone` / `len`
+/ `is_empty`.
+
+Types: `MatrixProfile`, `MATRIX_PROFILE_MIN_WINDOW`.
+
+References:
+
+1. Y. Zhu, Z. Zimmerman, N. Senobari, C. Yeh, G. Funning,
+   A. Mueen, P. Brisk, E. Keogh, *Matrix Profile II: Exploiting a
+   Novel Algorithm and GPUs to Break the One Hundred Million
+   Barrier for Time Series Motifs and Joins*, ICDM 2016.
+2. C. Yeh, Y. Zhu, L. Ulanova, N. Begum, Y. Ding, H. A. Dau,
+   D. F. Silva, A. Mueen, E. Keogh, *Matrix Profile I: All Pairs
+   Similarity Joins for Time Series*, ICDM 2016.
+
+Source: `src/matrix_profile.rs`.
+
 ### `DynamicForest<MAX_D>` — runtime-dim variant
 
 `DynamicForest<MAX_D>` wraps `RandomCutForest<MAX_D>` behind a

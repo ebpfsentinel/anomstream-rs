@@ -16,7 +16,7 @@
 
 use anomstream_core::{
     AdwinDetector, BloomFilter, CountMinSketch, CusumConfig, DriftAwareForest, DriftRecoveryConfig,
-    DynamicForest, FeatureDriftDetector, FeatureGroups, ForestBuilder, HyperLogLog,
+    DynamicForest, FeatureDriftDetector, FeatureGroups, ForestBuilder, HyperLogLog, MatrixProfile,
     MetaDriftDetector, NormStrategy, Normalizer, OnlineStats, PerFeatureCusum,
     PerFeatureCusumConfig, PerFeatureEwma, PerFeatureEwmaConfig, PotDetector, RandomCutForest,
     ScoreHistogram, ShingledForestBuilder, SpaceSaving, TDigest, ensemble::fisher_combine,
@@ -852,6 +852,63 @@ fn bench_hyperloglog(c: &mut Criterion) {
     group.finish();
 }
 
+/// `MatrixProfile::compute` — STOMP batch discord / motif. Covers
+/// three `(n, m)` pairs spanning the working range: 1 K samples
+/// with a 32-long window (small forensic snapshot), 2 K / 64
+/// (typical beaconing window), 4 K / 128 (longer shape search).
+/// Complexity is `O(n²)` so the 4 K case dwarfs the others — kept
+/// below the measurement cut-off by shrinking the warm-up.
+fn bench_matrix_profile(c: &mut Criterion) {
+    let mut group = c.benchmark_group("matrix_profile");
+    group.sample_size(10);
+
+    let build_series = |n: usize, seed: u64| -> Vec<f64> {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        (0..n)
+            .map(|i| {
+                let base = (i as f64 * 0.25).cos();
+                let noise: f64 = rng.random::<f64>() - 0.5;
+                base + 0.1 * noise
+            })
+            .collect()
+    };
+
+    group.bench_function("compute_n1024_w32", |b| {
+        let series = build_series(1_024, 2026);
+        b.iter(|| {
+            let mp = MatrixProfile::compute(black_box(&series), 32, None).expect("mp");
+            black_box(mp);
+        });
+    });
+
+    group.bench_function("compute_n2048_w64", |b| {
+        let series = build_series(2_048, 7);
+        b.iter(|| {
+            let mp = MatrixProfile::compute(black_box(&series), 64, None).expect("mp");
+            black_box(mp);
+        });
+    });
+
+    group.bench_function("compute_n4096_w128", |b| {
+        let series = build_series(4_096, 42);
+        b.iter(|| {
+            let mp = MatrixProfile::compute(black_box(&series), 128, None).expect("mp");
+            black_box(mp);
+        });
+    });
+
+    group.bench_function("discord_topk5_n2048_w64", |b| {
+        let series = build_series(2_048, 13);
+        let mp = MatrixProfile::compute(&series, 64, None).expect("mp");
+        b.iter(|| {
+            let top = mp.discord_topk(black_box(5));
+            black_box(top);
+        });
+    });
+
+    group.finish();
+}
+
 /// `BloomFilter` — IOC membership sketch. Covers the per-key
 /// `insert`/`contains` paths at two load points (1 K / 100 K
 /// inserts, both sized at `fpr = 0.01`) plus the bitwise-OR
@@ -987,6 +1044,7 @@ criterion_group!(
     bench_persistence,
     bench_hyperloglog,
     bench_space_saving,
-    bench_bloom
+    bench_bloom,
+    bench_matrix_profile
 );
 criterion_main!(benches);

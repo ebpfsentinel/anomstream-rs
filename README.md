@@ -11,6 +11,7 @@ Powers the ML detection pipeline of the **eBPFsentinel Enterprise** NDR agent; d
 **In scope** — streaming, bounded-memory, online-update primitives:
 
 - Multivariate anomaly detection (Random Cut Forest and variants)
+- Time-series discord / motif (Matrix Profile / STOMP — exact batch complement to the online shingled forest)
 - Per-feature drift detectors (EWMA z-score, two-sided CUSUM, PSI / KL)
 - Score-level drift + regime-change (meta CUSUM, ADWIN, SPOT / DSPOT)
 - Streaming stats + sketches (Welford `OnlineStats`, t-digest, histograms, Count-Min Sketch, `HyperLogLog`, Space-Saving top-K, Bloom filter)
@@ -34,6 +35,7 @@ The Random Cut Forest implementation inside the toolkit is a focused port of the
 - `RandomCutForest<D>` — AWS-conformant aggregate root (Guha 2016)
 - `ThresholdedForest<D>` — adaptive threshold wrapper (TRCF)
 - `ShingledForest` — scalar-stream temporal wrapper over the forest
+- `MatrixProfile` — STOMP exact batch time-series discord / motif (complements `ShingledForest`)
 - `DynamicForest` — runtime-dim variant
 - `DriftAwareForest` — shadow-swap recovery when a drift detector fires
 - `TenantForestPool` — bounded per-tenant forest pool with LRU eviction
@@ -174,6 +176,7 @@ Each detector cites the paper it implements. Representative references by family
 - **HyperLogLog** — Flajolet, Fusy, Gandouet, Meunier — AofA 2007. *HyperLogLog in Practice*: Heule, Nunkesser, Hall, EDBT 2013.
 - **Space-Saving** — Metwally, Agrawal, El Abbadi, *Efficient Computation of Frequent and Top-k Elements in Data Streams*, ICDT 2005.
 - **Bloom filter** — Bloom, *Space/Time Trade-offs in Hash Coding with Allowable Errors*, CACM 13(7), 1970. Double-hashing: Kirsch & Mitzenmacher, *Less Hashing, Same Performance*, ESA 2006.
+- **Matrix Profile / STOMP** — Zhu, Zimmerman, Senobari, Yeh, Funning, Mueen, Brisk, Keogh, *Matrix Profile II: Exploiting a Novel Algorithm and GPUs…*, ICDM 2016. Original MP: Yeh et al., *Matrix Profile I*, ICDM 2016.
 - **SAGE** — Covert, Lundberg, Lee, *Understanding Global Feature Contributions Through Additive Importance Measures*, NeurIPS 2020.
 - **Welford variance** — Welford, Technometrics 4(3), 1962.
 
@@ -193,7 +196,7 @@ Details: [docs/conformance.md](docs/conformance.md).
 
 ### `no_std` + `alloc`
 
-`default-features = false` drops the runtime layer (MPSC channel, tenant pool, drift-aware shadow swap, ADWIN, LSH clustering, SAGE, SPOT/DSPOT, feedback store, shingled forest, dynamic forest, `CountMinSketch`, `HyperLogLog`, `SpaceSaving`, `BloomFilter`) and leaves the core forest + trees + reservoir sampler + thresholded layer + meta / feature drift detectors +
+`default-features = false` drops the runtime layer (MPSC channel, tenant pool, drift-aware shadow swap, ADWIN, LSH clustering, SAGE, SPOT/DSPOT, feedback store, shingled forest, dynamic forest, `CountMinSketch`, `HyperLogLog`, `SpaceSaving`, `BloomFilter`, `MatrixProfile`) and leaves the core forest + trees + reservoir sampler + thresholded layer + meta / feature drift detectors +
 t-digest + alert clusterer + bootstrap + calibrator + forensic baseline + audit record + severity bands + companion primitives (`OnlineStats`, `Normalizer<D>`, `PerFeatureEwma<D>`, `PerFeatureCusum<D>`) running under `#![no_std]` with `alloc`. Transcendentals (`ln`, `sqrt`, `exp`, …) route through `num-traits`
 
 - `libm`; hashing-dependent code paths fall back to `alloc::collections::BTreeMap`.
