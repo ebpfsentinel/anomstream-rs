@@ -77,7 +77,7 @@ The Random Cut Forest implementation inside the toolkit is a focused port of the
 
 - `AlertClusterer` / `LshAlertClusterer` — cosine + LSH alert dedup
 - `FeedbackStore` — SOC-label-driven score adjustment
-- `AuditRecord` — immutable alert envelope
+- `AlertRecord` / `AlertContext` — immutable alert envelope (triage crate)
 - `ForensicBaseline` — post-hoc distance-to-sample summary
 
 **Hot-path ingress**
@@ -101,7 +101,7 @@ The toolkit ships as a Cargo workspace with four members. Consumers can depend o
 |---|---|---|
 | [`anomstream`](meta/) | Facade — feature-gated re-exports of the three members. **Primary public-facing crate.** | `anomstream` |
 | [`anomstream-core`](core/) | Detectors + streaming primitives + cross-cut contracts (`MetricsSink`, `SeverityBands`, `ForestSnapshot`). Targets SemVer 1.0 first. | `anomstream-core` |
-| [`anomstream-triage`](triage/) | SOC-opinionated higher-level layer — Platt, SAGE, alert clustering, feedback store, audit record. Depends on core. | `anomstream-triage` |
+| [`anomstream-triage`](triage/) | SOC-opinionated higher-level layer — Platt, SAGE, alert clustering, feedback store, alert record. Depends on core. | `anomstream-triage` |
 | [`anomstream-hotpath`](hotpath/) | Opinionated eBPF-style ingress primitives — `UpdateSampler`, `PrefixRateCap`, bounded MPSC `channel`. Depends on core. | `anomstream-hotpath` |
 
 Three consumption patterns:
@@ -191,7 +191,7 @@ Each detector cites the paper it implements. Representative references by family
 
 The Random Cut Forest implementation conforms to the AWS `SageMaker` hyperparameter bounds (`feature_dim`, `num_trees`, `num_samples_per_tree`, `time_decay`) — enforced at build time.
 
-Details: [docs/conformance.md](docs/conformance.md).
+Details: [docs/conformance_rcf.md](docs/conformance_rcf.md).
 
 ## Features
 

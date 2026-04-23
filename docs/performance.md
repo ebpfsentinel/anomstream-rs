@@ -721,7 +721,10 @@ Caveats:
 
 - **Plain point-wise ROC-AUC**; the official TSB-AD leaderboard
   ranks on **VUS-PR** (Paparrizos et al. 2022) which integrates
-  range-based precision / recall across a sliding window.
+  range-based precision / recall across a sliding window. VUS-PR
+  is now available in-crate — see the `vus_pr` module and
+  `examples/tsb_ad_m_eval.rs` for a range-aware alternative to
+  this point-wise AUC regression guard.
 - **RCF is classical by design** — transformer-based SOTA
   (TimesNet, Anomaly Transformer) outscores every impl here on
   heavy-physics datasets (SWaT, Daphnet, GECCO) where the anomaly

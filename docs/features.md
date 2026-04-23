@@ -21,7 +21,7 @@ so their SemVer can evolve at their own cadence:
 | Forest scoring operations | `anomstream-core` |
 | Explanation & triage → `SeverityBands`, `DiVector`, `AttributionStability`, `ForensicBaseline`, `FeatureGroups` | `anomstream-core` |
 | Explanation & triage → `SageEstimator`, `PlattCalibrator` | **`anomstream-triage`** |
-| SOC & ops → `AlertClusterer`, `LshAlertClusterer`, `FeedbackStore`, `AuditRecord` | **`anomstream-triage`** |
+| SOC & ops → `AlertClusterer`, `LshAlertClusterer`, `FeedbackStore`, `AlertRecord` | **`anomstream-triage`** |
 | Training & retention | `anomstream-core` |
 | Persistence | `anomstream-core` |
 | Observability → `MetricsSink` + metric names table | `anomstream-core` |
@@ -1310,9 +1310,12 @@ globally and measure wall-clock with criterion:
 - `core/benches/extended.rs` — bulk scoring, early-term, forensic,
   tenant similarity / cross-tenant, stateless codisp, TRCF
   process, delete.
-- `core/benches/modules.rs` — 20 groups: shingled, quantiles,
-  drift detectors, per-feature EWMA/CUSUM, sketches, normalize,
-  dynamic + drift-aware, plus closing-pass adds (group_scores,
+- `core/benches/modules.rs` — 23 groups: shingled forest, matrix
+  profile (STOMP), quantiles (t-digest + histogram), drift
+  detectors (feature / meta / ADWIN / SPOT-DSPOT / Fisher),
+  per-feature EWMA/CUSUM, sketches (CountMinSketch / HyperLogLog /
+  SpaceSaving / BloomFilter), normalize, dynamic + drift-aware
+  forests, plus closing-pass adds (group_scores,
   attribution_stability, score_ci, bootstrap, persistence).
 - `triage/benches/modules.rs` — LSH clustering, Platt calibration,
   SAGE explanations, cosine alert clustering, feedback store.
