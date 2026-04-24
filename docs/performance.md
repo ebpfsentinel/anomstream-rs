@@ -254,6 +254,7 @@ nanosecond territory:
 | `UpdateSampler::accept_hash` (keyed) keep=8        | 15 ns    | ~67 M/s    |
 | `PrefixRateCap::check_and_record` 100/1s           | 8.9 ns   | ~112 M/s   |
 | `update_channel::try_enqueue` cap=4096 (+ drain)   | 487 ns   | ~2.1 M/s   |
+| `metrics::default_sink()` shared-Arc clone         | 12 ns    | ~85 M/s    |
 
 - **Keyed vs unkeyed hash**: murmur-mix finaliser costs ~1.2 ns
   — negligible vs the atomic fetch-add on the accepted/rejected

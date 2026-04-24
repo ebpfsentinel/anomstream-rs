@@ -30,7 +30,7 @@
 //! pool's factory closure.
 
 #[cfg(feature = "std")]
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 /// Narrow observability interface exposed by anomstream-core detectors.
 pub trait MetricsSink: Send + Sync + core::fmt::Debug {
@@ -56,12 +56,23 @@ impl MetricsSink for NoopSink {
     fn observe_histogram(&self, _name: &str, _value: f64) {}
 }
 
-/// Build an `Arc<dyn MetricsSink>` backed by a fresh [`NoopSink`].
-/// Used by the crate's own default-sink paths.
+/// Process-wide shared [`NoopSink`] Arc. Built once on first
+/// access and reused by every [`default_sink`] call so detector
+/// / sampler / channel constructors do not heap-allocate a fresh
+/// `Arc<NoopSink>` each time — the refcount bump is a single
+/// relaxed atomic RMW.
+#[cfg(feature = "std")]
+static SHARED_NOOP_SINK: LazyLock<Arc<dyn MetricsSink>> = LazyLock::new(|| Arc::new(NoopSink));
+
+/// Return the process-wide shared [`NoopSink`] handle. Clone of
+/// a lazily-initialised static — no heap allocation on the hot
+/// constructor path. The returned `Arc` coerces to
+/// `Arc<dyn MetricsSink>` so call sites can store it behind the
+/// same dynamic-dispatch sink handle every detector uses.
 #[cfg(feature = "std")]
 #[must_use]
 pub fn default_sink() -> Arc<dyn MetricsSink> {
-    Arc::new(NoopSink)
+    Arc::clone(&SHARED_NOOP_SINK)
 }
 
 /// In-memory testing sink that records every observation into
@@ -392,5 +403,25 @@ mod tests {
         assert_eq!(s.counter("nope"), 0);
         assert!(s.gauge("nope").is_none());
         assert!(s.histogram("nope").is_empty());
+    }
+
+    #[test]
+    fn default_sink_returns_shared_arc() {
+        let a = default_sink();
+        let b = default_sink();
+        // Both handles must reference the same backing allocation
+        // — the shared-static optimisation depends on it.
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "default_sink() should clone a process-wide shared Arc"
+        );
+    }
+
+    #[test]
+    fn default_sink_hits_strong_count_greater_than_one() {
+        let pre = Arc::strong_count(&default_sink());
+        let _pins: Vec<Arc<dyn MetricsSink>> = (0..16).map(|_| default_sink()).collect();
+        let post = Arc::strong_count(&default_sink());
+        assert!(post >= pre + 16);
     }
 }

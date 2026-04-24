@@ -96,10 +96,27 @@ fn bench_hot_path_channel(c: &mut Criterion) {
     group.finish();
 }
 
+/// `default_sink()` — cost of the shared-Arc clone path used by
+/// every `UpdateSampler::new` / `update_channel` / detector
+/// constructor. Previously a per-call `Arc::new(NoopSink)` heap
+/// allocation; now a refcount bump on a lazily-initialised
+/// process-wide static.
+fn bench_default_sink(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hot_path_default_sink");
+    group.bench_function("clone_shared_noop", |b| {
+        b.iter(|| {
+            let sink = anomstream_core::metrics::default_sink();
+            black_box(sink);
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_hot_path_sampler,
     bench_hot_path_prefix_cap,
-    bench_hot_path_channel
+    bench_hot_path_channel,
+    bench_default_sink
 );
 criterion_main!(benches);
