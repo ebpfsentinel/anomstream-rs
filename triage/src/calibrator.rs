@@ -55,6 +55,25 @@ pub const DEFAULT_MIN_STEP: f64 = 1e-10;
 /// Hessian stops being positive definite.
 pub const DEFAULT_SIGMA: f64 = 1e-12;
 
+/// Skew ratio above which Newton-Raphson is skipped in favour of
+/// the online-SGD fallback. At extreme class imbalance (e.g.
+/// 10 000 benign : 50 confirmed, common for long-running
+/// production streams) the Newton objective's Hessian becomes
+/// near-singular and the line-search aborts early, leaving a
+/// poorly-fit calibrator. SGD with a prior-seeded intercept is
+/// numerically stable in that regime.
+pub const DEFAULT_SKEW_THRESHOLD: f64 = 100.0;
+
+/// Number of SGD passes over the calibration set on the skew
+/// fallback path. 16 passes ≈ same number of gradient evaluations
+/// as a typical Newton fit (8–12 iters × 2 likelihood evals).
+pub const DEFAULT_SKEW_SGD_EPOCHS: usize = 16;
+
+/// Learning rate for the SGD fallback. Conservative default; the
+/// adjustment is small, and stability matters more than speed on
+/// the skew path.
+pub const DEFAULT_SKEW_SGD_LR: f64 = 0.01;
+
 /// Fit-time configuration. Defaults match the reference Lin et al.
 /// (2007) hyperparameters.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -128,6 +147,15 @@ pub struct PlattCalibrator {
     /// means the solver exhausted [`PlattFitConfig::max_iters`]
     /// and the result is the best attempt available.
     converged: bool,
+    /// `true` when the fit detected class skew above
+    /// [`DEFAULT_SKEW_THRESHOLD`] and fell back to online-SGD
+    /// from a prior-seeded initialisation. Callers should surface
+    /// this as a dashboard warning — a skewed calibration set is
+    /// often an operational issue (mis-labelled benigns, under-
+    /// reporting of confirmed alerts) that the fitter cannot fix
+    /// on its own. Defaults to `false` for old serde snapshots.
+    #[cfg_attr(feature = "serde", serde(default))]
+    high_skew: bool,
 }
 
 impl PlattCalibrator {
@@ -141,6 +169,7 @@ impl PlattCalibrator {
             b,
             iters: 0,
             converged: true,
+            high_skew: false,
         }
     }
 
@@ -173,34 +202,66 @@ impl PlattCalibrator {
             }
         }
 
-        let (prior0, prior1) = {
-            let mut n_pos = 0_usize;
-            let mut n_neg = 0_usize;
-            for (_, y) in data {
-                if *y {
-                    n_pos += 1;
-                } else {
-                    n_neg += 1;
-                }
+        let mut n_pos = 0_usize;
+        let mut n_neg = 0_usize;
+        for (_, y) in data {
+            if *y {
+                n_pos += 1;
+            } else {
+                n_neg += 1;
             }
-            #[allow(clippy::cast_precision_loss)]
-            let p = (n_pos as f64 + 1.0) / (n_pos as f64 + 2.0);
-            #[allow(clippy::cast_precision_loss)]
-            let n = 1.0 / (n_neg as f64 + 2.0);
-            (n, p)
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let prior1 = (n_pos as f64 + 1.0) / (n_pos as f64 + 2.0);
+        #[allow(clippy::cast_precision_loss)]
+        let prior0 = 1.0 / (n_neg as f64 + 2.0);
+
+        // Detect class skew. At >100:1 the Newton Hessian goes
+        // near-singular; fall back to SGD seeded from the prior
+        // intercept to keep the fit numerically stable.
+        #[allow(clippy::cast_precision_loss)]
+        let skew_ratio = if n_pos == 0 || n_neg == 0 {
+            f64::INFINITY
+        } else {
+            let bigger = n_pos.max(n_neg) as f64;
+            let smaller = n_pos.min(n_neg) as f64;
+            bigger / smaller
         };
+        let high_skew = skew_ratio > DEFAULT_SKEW_THRESHOLD;
 
         // Initialise: a = 0, b = ln((N- + 1) / (N+ + 1))
-        let mut a = 0.0_f64;
-        let mut b = {
-            let n_pos = data.iter().filter(|(_, y)| *y).count();
-            let n_neg = data.len() - n_pos;
-            #[allow(clippy::cast_precision_loss)]
+        #[allow(clippy::cast_precision_loss)]
+        let initial_b = {
             let num = (n_neg as f64 + 1.0).ln();
-            #[allow(clippy::cast_precision_loss)]
             let den = (n_pos as f64 + 1.0).ln();
             num - den
         };
+
+        if high_skew {
+            // Prior-seeded SGD fallback. Avoid the Newton objective
+            // entirely; instead run `DEFAULT_SKEW_SGD_EPOCHS` passes
+            // of online logistic-regression SGD. Every sample uses
+            // [`Self::update_online`] (gradient derivation documented
+            // there), so the skew path reuses the same math as the
+            // online-refinement escape hatch.
+            let mut cal = Self {
+                a: 0.0,
+                b: initial_b,
+                iters: 0,
+                converged: false,
+                high_skew: true,
+            };
+            for _epoch in 0..DEFAULT_SKEW_SGD_EPOCHS {
+                for (score, label) in data {
+                    cal.update_online(*score, *label, DEFAULT_SKEW_SGD_LR)?;
+                }
+            }
+            cal.converged = true;
+            return Ok(cal);
+        }
+
+        let mut a = 0.0_f64;
+        let mut b = initial_b;
 
         let targets: Vec<f64> = data
             .iter()
@@ -289,7 +350,18 @@ impl PlattCalibrator {
             b,
             iters,
             converged,
+            high_skew: false,
         })
+    }
+
+    /// `true` when the last fit detected class skew above
+    /// [`DEFAULT_SKEW_THRESHOLD`] and landed on the SGD fallback
+    /// path. SOC dashboards should flag this — extreme imbalance
+    /// usually points at a labelling pipeline regression that the
+    /// calibrator cannot recover from on its own.
+    #[must_use]
+    pub fn high_skew(&self) -> bool {
+        self.high_skew
     }
 
     /// Slope parameter.
@@ -349,20 +421,25 @@ impl PlattCalibrator {
     /// `1e-3 .. 1e-1`); higher values track drift faster but
     /// increase variance.
     ///
-    /// Gradient derivation — logistic loss
-    /// `L = −[y · ln(p) + (1 − y) · ln(1 − p)]` with
-    /// `p = 1/(1 + exp(a·s + b))` gives:
+    /// Gradient derivation for the Platt parameterisation
+    /// `p = 1 / (1 + exp(a · s + b))`:
     ///
     /// ```text
-    /// ∂L/∂a = (p − y) · s
-    /// ∂L/∂b = (p − y)
+    /// z = a · s + b
+    /// p = σ(−z)           # so dp/dz = −p·(1−p)
+    /// L = −[y · ln(p) + (1 − y) · ln(1 − p)]
+    /// dL/dz = y − p
+    /// dL/da = (y − p) · s
+    /// dL/db = (y − p)
     /// ```
     ///
-    /// SGD step: `a ← a − lr · (p − y) · s`, `b ← b − lr · (p − y)`.
-    /// Note the label polarity is inverted vs the classical
-    /// Platt parameterisation — `p` here is `P(y = 1 | score)`,
-    /// and anomalous samples (high score) must map to
-    /// `label = true`. Non-finite scores are silently dropped.
+    /// Gradient *descent* on `L` therefore subtracts the gradient:
+    /// `a ← a − lr · (y − p) · s`, `b ← b − lr · (y − p)`. On a
+    /// well-fit calibrator, high score + `label = true` drives
+    /// `a` more negative (since `s > 0`, `y − p > 0`), which is
+    /// exactly the direction the Platt convention needs — higher
+    /// probability at higher score. Non-finite scores are silently
+    /// dropped.
     ///
     /// # Errors
     ///
@@ -379,9 +456,9 @@ impl PlattCalibrator {
         }
         let p = self.calibrate(score);
         let y = f64::from(u8::from(label));
-        let err = p - y;
-        self.a -= lr * err * score;
-        self.b -= lr * err;
+        let residual = y - p;
+        self.a -= lr * residual * score;
+        self.b -= lr * residual;
         self.iters = self.iters.saturating_add(1);
         self.converged = false;
         Ok(())
@@ -497,5 +574,41 @@ mod tests {
     fn validate_rejects_non_positive_tolerance() {
         assert!(cfg(DEFAULT_MAX_ITERS, 0.0).validate().is_err());
         assert!(cfg(DEFAULT_MAX_ITERS, -1.0).validate().is_err());
+    }
+
+    #[test]
+    fn balanced_fit_does_not_flag_skew() {
+        let mut data = Vec::new();
+        for i in 0..100 {
+            data.push((f64::from(i) * 0.01, false));
+        }
+        for i in 0..80 {
+            data.push((5.0 + f64::from(i) * 0.01, true));
+        }
+        let cal = PlattCalibrator::fit(&data, PlattFitConfig::default()).unwrap();
+        assert!(!cal.high_skew());
+    }
+
+    #[test]
+    fn severe_skew_triggers_sgd_fallback_and_still_separates() {
+        // 10 000 benign : 50 confirmed = 200:1 skew. Newton path
+        // would stall on a near-singular Hessian; the SGD fallback
+        // must produce a monotonic calibrator anyway.
+        let mut data = Vec::new();
+        for i in 0..10_000 {
+            data.push((f64::from(i) * 0.0001, false));
+        }
+        for i in 0..50 {
+            data.push((5.0 + f64::from(i) * 0.01, true));
+        }
+        let cal = PlattCalibrator::fit(&data, PlattFitConfig::default()).unwrap();
+        assert!(cal.high_skew(), "fit should have flagged severe skew");
+        let p_anomaly = cal.calibrate(5.5);
+        let p_normal = cal.calibrate(0.01);
+        assert!(
+            p_anomaly > p_normal,
+            "SGD-fallback calibrator lost monotonicity: \
+             p_anomaly={p_anomaly} p_normal={p_normal}"
+        );
     }
 }

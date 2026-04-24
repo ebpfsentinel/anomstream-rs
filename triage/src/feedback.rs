@@ -245,11 +245,23 @@ impl<const D: usize> FeedbackStore<D> {
     }
 
     /// Shift `raw_score` toward the label of its nearest labelled
-    /// neighbours via a Gaussian-kernel-weighted sum:
+    /// neighbours via a Gaussian-kernel-weighted **mean** of the
+    /// signed labels:
     ///
     /// ```text
-    /// adjusted = raw + strength · Σ_i sign(label_i) · exp(−|probe − p_i|² / (2 σ²))
+    /// w_i   = exp(−|probe − p_i|² / (2 σ²))
+    /// bias  = (Σ_i sign(label_i) · w_i) / max(Σ_i w_i, ε)
+    /// adjusted = max(0, raw + strength · bias)
     /// ```
+    ///
+    /// The normalisation by the kernel-weight sum bounds `bias` in
+    /// `[-1, 1]` regardless of how many labels sit near the probe
+    /// — 500 confirmed labels at the probe no longer add
+    /// `500 · strength` to the raw score; they add at most
+    /// `strength`. Without this normalisation the adjustment scale
+    /// grew linearly in stored labels and could push adjusted
+    /// scores far beyond the `[0, a few]` range downstream
+    /// dashboards assume.
     ///
     /// Benign labels push the score **down**; confirmed labels
     /// push it **up**. The returned value is clamped to `≥ 0` so
@@ -263,7 +275,8 @@ impl<const D: usize> FeedbackStore<D> {
             return raw_score;
         }
         let two_sigma_sq = 2.0 * self.sigma * self.sigma;
-        let mut bias = 0.0_f64;
+        let mut signed_sum = 0.0_f64;
+        let mut kernel_sum = 0.0_f64;
         for entry in &self.entries {
             let mut sq = 0.0_f64;
             for (probe_d, entry_d) in probe.iter().zip(entry.point.iter()) {
@@ -271,8 +284,18 @@ impl<const D: usize> FeedbackStore<D> {
                 sq += diff * diff;
             }
             let kernel = (-sq / two_sigma_sq).exp();
-            bias += entry.label.sign() * kernel;
+            signed_sum += entry.label.sign() * kernel;
+            kernel_sum += kernel;
         }
+        // Normalise to a kernel-weighted mean of signs in `[-1, 1]`.
+        // Guard the `0 / 0` case where every stored label is too
+        // far from `probe` to register any kernel weight — return
+        // the raw score unchanged rather than propagate `NaN`.
+        let bias = if kernel_sum > f64::EPSILON {
+            signed_sum / kernel_sum
+        } else {
+            0.0
+        };
         (raw_score + self.strength * bias).max(0.0)
     }
 
@@ -382,5 +405,42 @@ mod tests {
     fn label_sign_values() {
         assert_eq!(FeedbackLabel::Benign.sign(), -1.0);
         assert_eq!(FeedbackLabel::Confirmed.sign(), 1.0);
+    }
+
+    #[test]
+    fn bias_stays_bounded_under_high_label_count() {
+        // 500 identical Confirmed labels at the probe.  The
+        // kernel-weighted mean of signs is exactly +1, so the
+        // bias contribution is `strength`, not `500 · strength`.
+        let mut s = FeedbackStore::<2>::new(512, 1.0, 1.0).unwrap();
+        for _ in 0..500 {
+            s.label([1.0, 2.0], FeedbackLabel::Confirmed).unwrap();
+        }
+        let raw = 0.5;
+        let adjusted = s.adjust(&[1.0, 2.0], raw);
+        // With 500 labels the old (un-normalised) formulation
+        // would have produced `raw + 500.0 = 500.5`.  Normalised
+        // the cap is `raw + 1.0 = 1.5`.
+        assert!(
+            adjusted <= raw + 1.0 + 1e-9,
+            "adjusted {adjusted} exceeds raw + strength bound (pre-fix regression)"
+        );
+        // Bias should be near +strength since every label is
+        // Confirmed and sits on the probe.
+        assert!((adjusted - (raw + 1.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn bias_interpolates_between_mixed_labels() {
+        // Three Confirmed, one Benign, all sitting on the probe.
+        // Kernel-weighted mean of signs: (3 - 1) / 4 = 0.5.
+        // Adjusted = raw + strength · 0.5.
+        let mut s = FeedbackStore::<2>::new(10, 1.0, 1.0).unwrap();
+        for _ in 0..3 {
+            s.label([0.0, 0.0], FeedbackLabel::Confirmed).unwrap();
+        }
+        s.label([0.0, 0.0], FeedbackLabel::Benign).unwrap();
+        let adjusted = s.adjust(&[0.0, 0.0], 0.2);
+        assert!((adjusted - 0.7).abs() < 1e-6, "adjusted = {adjusted}");
     }
 }

@@ -1222,6 +1222,37 @@ and every `.observe()` / `.update()` / `.record()` /
 verdict is `#[must_use = "…"]`. Drops in hot paths must use
 `let _ = detector.observe(x);` explicitly.
 
+### Calibration + feedback quality
+
+- **Platt skew fallback** — `PlattCalibrator::fit` now detects
+  class imbalance greater than `DEFAULT_SKEW_THRESHOLD = 100` and
+  skips the Newton-Raphson path whose Hessian goes near-singular
+  at that regime. Skew cases initialise `(a, b)` from the smoothed
+  prior (`a = 0`, `b = ln((N− + 1) / (N+ + 1))`) and then run
+  `DEFAULT_SKEW_SGD_EPOCHS = 16` passes of online logistic SGD at
+  `DEFAULT_SKEW_SGD_LR = 0.01`. The returned calibrator carries a
+  `high_skew()` flag so SOC dashboards can surface the fallback
+  condition — extreme imbalance is typically a labelling-pipeline
+  regression the calibrator cannot fix on its own. Regression
+  test `severe_skew_triggers_sgd_fallback_and_still_separates`
+  pins the 200:1 separability floor.
+- **`PlattCalibrator::update_online` gradient sign fix** — the
+  SGD step subtracts `lr · (y − p) · s` (derived from
+  `dL/da = (y − p) · s` for the Platt parameterisation
+  `p = 1 / (1 + exp(a · s + b))`). The earlier code flipped the
+  sign and drifted the calibrator in the ascent direction under
+  sustained online updates. Behavioural break for callers relying
+  on the previous wrong direction; pre-v1 so intentional.
+- **`FeedbackStore::adjust` kernel-weighted mean** — the
+  Gaussian-kernel-weighted sum is now normalised by the sum of
+  kernel weights, yielding a bias in `[-1, 1]` regardless of
+  stored-label count. Previously `500` Confirmed labels at a
+  probe added `500 · strength` to the raw score; now they add at
+  most `strength`. Mixed labels interpolate — `k` Confirmed / `m`
+  Benign at a probe give bias `(k − m) / (k + m)`. Regression
+  tests pin both the hard-bound and the mixed-label interpolation
+  semantics.
+
 ### Default sink allocation
 
 `metrics::default_sink()` (used by every `UpdateSampler::new` /
