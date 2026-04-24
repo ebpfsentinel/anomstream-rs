@@ -1222,6 +1222,31 @@ and every `.observe()` / `.update()` / `.record()` /
 verdict is `#[must_use = "…"]`. Drops in hot paths must use
 `let _ = detector.observe(x);` explicitly.
 
+### Release discipline
+
+CI is split across two workflows:
+
+- `.github/workflows/ci.yml` — fires **weekly** (Monday 03:00 UTC)
+  and on `workflow_dispatch`. Runs fmt, clippy, `no_std` checks,
+  feature-matrix build, workspace tests on stable + MSRV, doc,
+  `cargo bench --no-run`, examples, `cargo audit`, `cargo deny`,
+  `cargo machete`, CycloneDX SBOM. Does **not** fire per-commit —
+  the weekly cadence catches supply-chain drift without burning
+  runner minutes on noise.
+- `.github/workflows/release.yml` — fires on every `v*` tag push
+  and on `workflow_dispatch`. Enforces a stricter gate before
+  publication is considered ready:
+  1. Workspace version is not the `0.0.0-dev` development
+     sentinel.
+  2. Git tag matches `workspace.package.version` (`v<version>`).
+  3. Full fmt / clippy / tests / doc.
+  4. `cargo audit` + `cargo deny check` clean.
+  5. `cargo publish --dry-run` for every member in dependency
+     order (`core → triage → hotpath → anomstream`).
+
+The workflow gates readiness; `cargo publish` itself is still run
+manually by a maintainer with `CARGO_REGISTRY_TOKEN`.
+
 ### Hot-path allocation scrub
 
 Three hot-path sites are now alloc-free:

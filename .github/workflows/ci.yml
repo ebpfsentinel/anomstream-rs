@@ -1,10 +1,23 @@
 name: CI
 
-# on:
-#   push:
-#     branches: [main]
-#   pull_request:
-#     branches: [main]
+# Manual + weekly schedule.
+#
+# Rationale: per-commit CI adds noise without catching issues that
+# a developer's local `cargo fmt && cargo clippy -- -D warnings &&
+# cargo test` loop would not — and the SBOM / dry-publish jobs are
+# slow. The weekly cron surfaces supply-chain drift (yanked
+# dependencies, fresh advisories, cargo-audit, cargo-deny) without
+# paying per-push runtime minutes. Use `workflow_dispatch` to run
+# the suite manually before tagging a release.
+#
+# The separate `release.yml` workflow fires automatically on
+# `v*` tags and runs a stricter gate (version != `0.0.0-dev`,
+# full publish-chain dry-run).
+on:
+  workflow_dispatch:
+  schedule:
+    # Every Monday 03:00 UTC.
+    - cron: "0 3 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -60,6 +73,7 @@ jobs:
           - "core,hotpath"
           - "core,triage,hotpath"
           - "core,parallel,postcard,serde_json"
+          - "full"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

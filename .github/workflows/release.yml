@@ -1,0 +1,107 @@
+name: Release
+
+# Fires automatically on `v*` tag push (e.g. `v1.0.0`, `v1.0.0-rc.1`),
+# or manually via `workflow_dispatch`. Enforces the release gates
+# every tag must pass before `cargo publish` is allowed:
+#
+# 1. Workspace version is not the `0.0.0-dev` development sentinel.
+# 2. Tag name matches `Cargo.toml` workspace.package.version.
+# 3. Full `fmt` + `clippy -D warnings` + workspace tests.
+# 4. `cargo audit` clean + `cargo deny check` clean.
+# 5. `cargo publish --dry-run` succeeds for every publishable
+#    member in dependency order (`core → triage → hotpath →
+#    anomstream`).
+#
+# The actual `cargo publish` still has to be run manually by a
+# maintainer with `CARGO_REGISTRY_TOKEN` in scope — this workflow
+# gates the *readiness* of a tag, not the publication itself.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  validate-version:
+    name: validate workspace version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: extract
+        name: extract workspace.package.version
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "::notice::Workspace version is $VERSION"
+      - name: reject 0.0.0-dev sentinel
+        run: |
+          VERSION="${{ steps.extract.outputs.version }}"
+          if [[ "$VERSION" == "0.0.0-dev" ]]; then
+            echo "::error::Refusing to release with development sentinel version 0.0.0-dev; bump workspace.package.version before tagging."
+            exit 1
+          fi
+      - name: match tag to version (skipped on workflow_dispatch)
+        if: github.event_name == 'push'
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          EXPECTED="v${{ steps.extract.outputs.version }}"
+          if [[ "$TAG" != "$EXPECTED" ]]; then
+            echo "::error::Git tag $TAG does not match workspace version $EXPECTED"
+            exit 1
+          fi
+
+  gate:
+    name: full release gate
+    needs: validate-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --no-default-features -- -D warnings
+      - run: cargo test --workspace --all-features
+      - run: cargo test --workspace --no-default-features --features "anomstream-core/std"
+      - run: cargo doc --workspace --all-features --no-deps
+
+  audit:
+    name: cargo audit + deny
+    needs: validate-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
+
+  publish-dry-run:
+    name: publish chain --dry-run
+    needs: [validate-version, gate, audit]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Dependency order matters — each member depends on the ones
+      # above via a version requirement that must resolve against
+      # crates.io (or the in-flight dry-run graph). `--allow-dirty`
+      # covers the un-committed Cargo.lock that can appear in
+      # CI workspaces.
+      - run: cargo publish --dry-run -p anomstream-core --allow-dirty
+      - run: cargo publish --dry-run -p anomstream-triage --allow-dirty
+      - run: cargo publish --dry-run -p anomstream-hotpath --allow-dirty
+      - run: cargo publish --dry-run -p anomstream --allow-dirty

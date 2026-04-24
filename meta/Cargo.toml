@@ -15,7 +15,15 @@ categories = ["algorithms", "science", "data-structures"]
 workspace = true
 
 [features]
-default = ["core", "triage", "hotpath", "std", "parallel", "serde", "postcard"]
+# v1 minimal default: bare forest + primitives under `std`. Every
+# additional layer (`triage`, `hotpath`, `parallel`, `serde`,
+# `postcard`, `serde_json`) is an explicit opt-in so downstream
+# consumers do not pay for dependencies they never use. The
+# historical "everything on by default" set has been retained
+# under the `full` convenience feature for callers who want the
+# old behaviour without enumerating flags.
+default = ["core", "std"]
+full = ["core", "triage", "hotpath", "std", "parallel", "serde", "postcard"]
 core = ["dep:anomstream-core"]
 triage = ["dep:anomstream-triage", "core"]
 hotpath = ["dep:anomstream-hotpath", "core", "std"]

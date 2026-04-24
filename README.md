@@ -107,15 +107,22 @@ The toolkit ships as a Cargo workspace with four members. Consumers can depend o
 Three consumption patterns:
 
 ```toml
-# Most consumers — single dep, all layers, default features.
+# Default — core detectors + primitives, minimal dep graph.
+# Every other layer is an explicit opt-in so downstream consumers
+# do not pay for dependencies they never use.
 [dependencies]
 anomstream = "0.0.0-dev"
 
-# Core-only — detectors + primitives, minimal dep graph.
+# Full facade — core + triage + hotpath + parallel + serde + postcard.
+# Convenience for deployments that want everything wired in.
 [dependencies]
-anomstream = { version = "0.0.0-dev", default-features = false, features = ["core", "std", "parallel", "serde"] }
+anomstream = { version = "0.0.0-dev", features = ["full"] }
 
-# Fine-grained — pick members directly when you want per-member SemVer tracking.
+# Fine-grained — pick the layers you need.
+[dependencies]
+anomstream = { version = "0.0.0-dev", features = ["core", "triage", "serde"] }
+
+# Member-direct — when you want per-member SemVer tracking.
 [dependencies]
 anomstream-core   = { version = "0.0.0-dev", features = ["parallel", "serde"] }
 anomstream-triage = { version = "0.0.0-dev" }
@@ -197,27 +204,55 @@ Details: [docs/conformance_rcf.md](docs/conformance_rcf.md).
 
 | Cargo feature | Default | Role                                                     |
 | ------------- | ------- | -------------------------------------------------------- |
-| `std`         | ✅      | Standard library support                                 |
-| `parallel`    | ✅      | Per-tree / batch parallelism via `rayon` (implies `std`) |
-| `serde`       | ✅      | State serialisation                                      |
-| `postcard`    | ✅      | Compact binary persistence (implies `serde`)             |
-| `serde_json`  | ❌      | JSON persistence (implies `serde`)                        |
+| `core`        | ✅      | Re-export of `anomstream-core` (bare forest + primitives) |
+| `std`         | ✅      | Standard library support (unlocks the full module surface) |
+| `triage`      | ❌      | Re-export of `anomstream-triage` (Platt, SAGE, LSH, feedback, audit) |
+| `hotpath`     | ❌      | Re-export of `anomstream-hotpath` (sampler, rate cap, MPSC channel) |
+| `parallel`    | ❌      | Per-tree / batch parallelism via `rayon` (implies `std`) |
+| `serde`       | ❌      | State serialisation                                      |
+| `postcard`    | ❌      | Compact binary persistence (implies `serde`)             |
+| `serde_json`  | ❌      | JSON persistence (implies `serde`)                       |
+| `full`        | ❌      | Convenience alias for `core + triage + hotpath + std + parallel + serde + postcard` |
+
+The default is `["core", "std"]` — deliberately minimal so consumers
+pay only for what they import. Enable `full` for the "everything
+wired in" deployment or cherry-pick layers explicitly.
+
+### Module availability table
+
+| Module / type                                   | Requires feature       |
+| ----------------------------------------------- | ---------------------- |
+| `RandomCutForest`, `ThresholdedForest`, `RcfConfig`, `ForestBuilder` | always (core, no_std + alloc) |
+| `OnlineStats`, `Normalizer`, `PerFeatureEwma`, `PerFeatureCusum`, `FeatureDriftDetector`, `MetaDriftDetector` | always (core, no_std + alloc) |
+| `TDigest`, `ScoreHistogram`, `ForensicBaseline`, `SeverityBands`, `AttributionStability`, `BootstrapReport` | always (core, no_std + alloc) |
+| `AdwinDetector`, `PotDetector`, `ensemble::fisher_combine` | `std`                  |
+| `CountMinSketch`, `HyperLogLog`, `SpaceSaving`, `BloomFilter` | `std`                  |
+| `ShingledForest`, `DynamicForest`, `DriftAwareForest`, `TenantForestPool`, `MatrixProfile` | `std`                  |
+| `TsbAdMDataset`, `vus_pr` / `range_auc_pr`      | `std`                  |
+| `AlertClusterer`, `AlertRecord`, `FeedbackStore`, `PlattCalibrator`, `SageEstimator`, `LshAlertClusterer` | `triage` (+ `std`) |
+| `UpdateSampler`, `PrefixRateCap`, `channel`, `MetricsSink` | `hotpath` (+ `std`)    |
 
 ### `no_std` + `alloc`
 
-`default-features = false` drops the runtime layer (MPSC channel, tenant pool, drift-aware shadow swap, ADWIN, LSH clustering, SAGE, SPOT/DSPOT, feedback store, shingled forest, dynamic forest, `CountMinSketch`, `HyperLogLog`, `SpaceSaving`, `BloomFilter`, `MatrixProfile`, `TsbAdMDataset` + VUS-PR) and leaves the core forest + trees + reservoir sampler + thresholded layer + meta / feature drift detectors +
-t-digest + alert clusterer + bootstrap + calibrator + forensic baseline + audit record + severity bands + companion primitives (`OnlineStats`, `Normalizer<D>`, `PerFeatureEwma<D>`, `PerFeatureCusum<D>`) running under `#![no_std]` with `alloc`. Transcendentals (`ln`, `sqrt`, `exp`, …) route through `num-traits`
-
-- `libm`; hashing-dependent code paths fall back to `alloc::collections::BTreeMap`.
+`default-features = false` drops every `std`-gated module listed
+above. The always-available set — the bare forest, ring-buffer
+sampler, thresholded wrapper, meta / feature drift detectors,
+t-digest, histogram, forensic baseline, severity bands, and the
+companion primitives (`OnlineStats`, `Normalizer<D>`,
+`PerFeatureEwma<D>`, `PerFeatureCusum<D>`) — runs under
+`#![no_std]` with `alloc`. Transcendentals (`ln`, `sqrt`, `exp`,
+…) route through `num-traits` + `libm`; hashing-dependent code
+paths fall back to `alloc::collections::BTreeMap`.
 
 ```toml
 [dependencies]
-anomstream = { version = "…", default-features = false }
+anomstream = { version = "…", default-features = false, features = ["core"] }
 # Optional: serde persistence under no_std
-anomstream = { version = "…", default-features = false, features = ["serde"] }
+anomstream = { version = "…", default-features = false, features = ["core", "serde"] }
 ```
 
-The `no_std` configuration is gated in CI (`cargo check --no-default-features` + `--features serde`).
+The `no_std` configuration is gated in CI
+(`cargo check --no-default-features` + `--features serde`).
 
 ## Performance
 
@@ -243,6 +278,28 @@ done | tee vus_pr.log
 ```
 
 The example uses `DynamicForest<128>` with a 50 % calibration / 50 % scoring split. Swap in `MatrixProfile` or your own detector by editing `core/examples/tsb_ad_m_eval.rs`.
+
+## CI + release
+
+CI runs on a weekly schedule (Monday 03:00 UTC) plus on demand via
+`workflow_dispatch`, not per-commit — fmt, clippy, `no_std`,
+feature-matrix, test, doc, `bench --no-run`, examples, audit,
+deny, machete, and CycloneDX SBOM. See `.github/workflows/ci.yml`.
+
+`.github/workflows/release.yml` fires on every `v*` tag push and
+manually; it enforces a stricter release gate before allowing a
+publish:
+
+- workspace `version` is not the `0.0.0-dev` sentinel
+- git tag matches `Cargo.toml` workspace version (`v<version>`)
+- full fmt / clippy / tests / doc pass
+- `cargo audit` + `cargo deny check` clean
+- `cargo publish --dry-run` succeeds for every member in the
+  publish order `core → triage → hotpath → anomstream`
+
+A maintainer still runs the actual `cargo publish` with
+`CARGO_REGISTRY_TOKEN` in hand — the workflow gates readiness of
+the tag, not the publication itself.
 
 ## License
 
