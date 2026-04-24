@@ -28,6 +28,20 @@ use alloc::vec::Vec;
 use core::hash::{Hash, Hasher};
 use std::hash::DefaultHasher;
 
+use crate::error::{RcfError, RcfResult};
+
+/// Maximum columns per row. Caps the per-sketch bit-cost to keep
+/// an attacker-controlled `(width, depth)` call from forcing an
+/// OOM: `MAX_WIDTH × MAX_DEPTH × 8 B ≈ 32 MiB` of counter table,
+/// well above the `ε ≈ 10⁻⁵` regime any realistic deployment
+/// needs.
+pub const MAX_WIDTH: usize = 1 << 18;
+
+/// Maximum pairwise-independent hash rows. `δ = (1/e)^16 ≈ 1.1 ×
+/// 10⁻⁷` already gives near-certain estimation bounds; deeper
+/// tables pay compute for negligible confidence gains.
+pub const MAX_DEPTH: usize = 16;
+
 /// Probabilistic frequency counter with additive-error bound.
 ///
 /// # Examples
@@ -35,7 +49,7 @@ use std::hash::DefaultHasher;
 /// ```
 /// use anomstream_core::CountMinSketch;
 ///
-/// let mut cms = CountMinSketch::new(2048, 4);
+/// let mut cms = CountMinSketch::new(2048, 4).expect("valid cms shape");
 /// cms.increment(b"10.0.0.1", 100);
 /// cms.increment(b"10.0.0.1", 50);
 /// assert!(cms.estimate(b"10.0.0.1") >= 150);
@@ -62,9 +76,25 @@ impl CountMinSketch {
     /// Knuth multiplicative hash constants so two instances with
     /// the same `(width, depth)` produce identical estimates for
     /// identical input streams.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RcfError::InvalidConfig`] on `width == 0`,
+    /// `depth == 0`, `width > MAX_WIDTH`, or `depth > MAX_DEPTH`.
+    /// The bounds cap the allocation an untrusted caller can
+    /// request.
     #[allow(clippy::cast_possible_truncation)]
-    pub fn new(width: usize, depth: usize) -> Self {
+    pub fn new(width: usize, depth: usize) -> RcfResult<Self> {
+        if width == 0 || width > MAX_WIDTH {
+            return Err(RcfError::InvalidConfig(alloc::format!(
+                "CountMinSketch: width {width} out of (0, {MAX_WIDTH}]"
+            )));
+        }
+        if depth == 0 || depth > MAX_DEPTH {
+            return Err(RcfError::InvalidConfig(alloc::format!(
+                "CountMinSketch: depth {depth} out of (0, {MAX_DEPTH}]"
+            )));
+        }
         let seeds: Vec<(u64, u64)> = (0..depth)
             .map(|i| {
                 let idx = i as u64 + 1;
@@ -74,13 +104,13 @@ impl CountMinSketch {
             })
             .collect();
 
-        Self {
+        Ok(Self {
             table: vec![vec![0_u64; width]; depth],
             seeds,
             width,
             depth,
             total: 0,
-        }
+        })
     }
 
     /// Number of rows in the sketch.
@@ -161,7 +191,7 @@ mod tests {
 
     #[test]
     fn basic_increment_and_estimate() {
-        let mut cms = CountMinSketch::new(2048, 4);
+        let mut cms = CountMinSketch::new(2048, 4).unwrap();
         cms.increment(b"192.168.1.1", 100);
         cms.increment(b"192.168.1.1", 50);
         cms.increment(b"10.0.0.1", 30);
@@ -173,7 +203,7 @@ mod tests {
 
     #[test]
     fn reset_clears_all() {
-        let mut cms = CountMinSketch::new(256, 3);
+        let mut cms = CountMinSketch::new(256, 3).unwrap();
         cms.increment(b"key", 1000);
         assert!(cms.estimate(b"key") >= 1000);
 
@@ -184,7 +214,7 @@ mod tests {
 
     #[test]
     fn accuracy_bounds_with_many_keys() {
-        let mut cms = CountMinSketch::new(2048, 4);
+        let mut cms = CountMinSketch::new(2048, 4).unwrap();
         let n = 100_000_u64;
 
         for i in 0..n {
@@ -205,13 +235,13 @@ mod tests {
 
     #[test]
     fn memory_footprint() {
-        let cms = CountMinSketch::new(2048, 4);
+        let cms = CountMinSketch::new(2048, 4).unwrap();
         assert_eq!(cms.memory_bytes(), 2048 * 4 * 8); // 64 KB
     }
 
     #[test]
     fn different_keys_different_estimates() {
-        let mut cms = CountMinSketch::new(1024, 4);
+        let mut cms = CountMinSketch::new(1024, 4).unwrap();
         cms.increment(b"alpha", 500);
         cms.increment(b"beta", 100);
 
@@ -222,7 +252,7 @@ mod tests {
 
     #[test]
     fn saturates_at_u64_max() {
-        let mut cms = CountMinSketch::new(64, 2);
+        let mut cms = CountMinSketch::new(64, 2).unwrap();
         cms.increment(b"k", u64::MAX - 10);
         cms.increment(b"k", 100);
         assert_eq!(cms.estimate(b"k"), u64::MAX);
@@ -231,8 +261,21 @@ mod tests {
 
     #[test]
     fn dim_accessors_match_constructor() {
-        let cms = CountMinSketch::new(512, 5);
+        let cms = CountMinSketch::new(512, 5).unwrap();
         assert_eq!(cms.width(), 512);
         assert_eq!(cms.depth(), 5);
+    }
+
+    #[test]
+    fn rejects_zero_dims() {
+        assert!(CountMinSketch::new(0, 4).is_err());
+        assert!(CountMinSketch::new(2048, 0).is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_dims() {
+        assert!(CountMinSketch::new(MAX_WIDTH + 1, 4).is_err());
+        assert!(CountMinSketch::new(2048, MAX_DEPTH + 1).is_err());
+        assert!(CountMinSketch::new(usize::MAX, usize::MAX).is_err());
     }
 }

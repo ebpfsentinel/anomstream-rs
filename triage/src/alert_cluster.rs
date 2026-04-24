@@ -63,6 +63,13 @@ use anomstream_core::error::{RcfError, RcfResult};
 #[cfg(feature = "std")]
 use std::sync::Arc;
 
+/// Default active-cluster cap. At one alert per millisecond this
+/// gives ~16 s of unique-attribution headroom before LRU eviction
+/// kicks in — enough for human-SOC flow rates, capped short of
+/// the memory-exhaustion regime a hostile high-cardinality
+/// stream would otherwise reach.
+pub const DEFAULT_MAX_CLUSTERS: usize = 16_384;
+
 /// Running cluster of near-duplicate alerts.
 ///
 /// Serializable under the `serde` feature so SIEM sinks can emit
@@ -121,6 +128,12 @@ where
     /// Sliding-window width in milliseconds. Clusters whose
     /// `last_seen_ms` is older than `now − window_ms` are pruned.
     window_ms: u64,
+    /// Hard cap on the active-cluster count. When [`Self::observe`]
+    /// would grow the pool beyond this bound, the oldest cluster
+    /// (smallest `last_seen_ms`) is evicted first — protects
+    /// against adversarial high-cardinality attribution streams
+    /// that would otherwise keep opening new clusters until OOM.
+    max_clusters: usize,
     /// Active clusters, order not meaningful to callers.
     clusters: Vec<AlertCluster<K, D>>,
     /// Pool-level metrics sink — every observe/prune emits to it.
@@ -136,6 +149,7 @@ where
         let mut s = f.debug_struct("AlertClusterer");
         s.field("similarity_threshold", &self.similarity_threshold)
             .field("window_ms", &self.window_ms)
+            .field("max_clusters", &self.max_clusters)
             .field("clusters", &self.clusters.len());
         #[cfg(feature = "std")]
         s.field("metrics", &self.metrics);
@@ -150,6 +164,10 @@ where
     /// Build a fresh clusterer. `similarity_threshold` must be in
     /// `(0, 1]`; `window_ms` is the sliding-window width in
     /// milliseconds (use `u64::MAX` to disable time-based pruning).
+    /// The active-cluster cap defaults to [`DEFAULT_MAX_CLUSTERS`]
+    /// — override via [`Self::with_max_clusters`] when the caller
+    /// has a tighter memory budget or explicitly wants to allow a
+    /// larger working set.
     ///
     /// # Errors
     ///
@@ -167,10 +185,42 @@ where
         Ok(Self {
             similarity_threshold,
             window_ms,
+            max_clusters: DEFAULT_MAX_CLUSTERS,
             clusters: Vec::new(),
             #[cfg(feature = "std")]
             metrics: anomstream_core::metrics::default_sink(),
         })
+    }
+
+    /// Override the active-cluster cap. When
+    /// [`Self::observe`] would push the pool past `max`, the
+    /// oldest cluster (smallest `last_seen_ms`) is evicted before
+    /// the new cluster is opened — bounded memory under
+    /// adversarial high-cardinality alert streams.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RcfError::InvalidConfig`] on `max == 0`.
+    pub fn with_max_clusters(mut self, max: usize) -> RcfResult<Self> {
+        if max == 0 {
+            return Err(RcfError::InvalidConfig(
+                "AlertClusterer: max_clusters must be > 0".into(),
+            ));
+        }
+        self.max_clusters = max;
+        // Trim eagerly when the new cap is below the live cluster
+        // count so the invariant `clusters.len() ≤ max_clusters`
+        // holds after the setter returns.
+        while self.clusters.len() > self.max_clusters {
+            self.evict_oldest_cluster();
+        }
+        Ok(self)
+    }
+
+    /// Active-cluster cap.
+    #[must_use]
+    pub fn max_clusters(&self) -> usize {
+        self.max_clusters
     }
 
     /// Install a [`anomstream_core::MetricsSink`] — every `observe` / `prune`
@@ -263,6 +313,16 @@ where
             );
             ClusterDecision::Joined(i)
         } else {
+            // Cap enforcement: evict the oldest cluster before
+            // opening a fresh one once we hit `max_clusters`.
+            // Protects against adversarial attribution streams
+            // that would otherwise fill the clusterer unboundedly
+            // within `window_ms`.
+            while self.clusters.len() >= self.max_clusters {
+                if !self.evict_oldest_cluster() {
+                    break;
+                }
+            }
             let ts = rec.timestamp_ms;
             let score = rec.score;
             let tenant = rec.tenant.clone();
@@ -283,6 +343,31 @@ where
             }
             ClusterDecision::NewCluster(idx)
         }
+    }
+
+    /// Remove the cluster with the smallest `last_seen_ms` (oldest
+    /// activity). Returns `true` when a cluster was removed.
+    /// Called by the cap-enforcement path in [`Self::observe`] and
+    /// by [`Self::with_max_clusters`] when tightening the cap.
+    fn evict_oldest_cluster(&mut self) -> bool {
+        let Some((oldest_idx, _)) = self
+            .clusters
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, c)| c.last_seen_ms)
+        else {
+            return false;
+        };
+        self.clusters.swap_remove(oldest_idx);
+        #[cfg(feature = "std")]
+        {
+            self.metrics.inc_counter(
+                anomstream_core::metrics::names::ALERT_CLUSTERS_PRUNED_TOTAL,
+                1,
+            );
+            self.emit_active_gauge();
+        }
+        true
     }
 
     /// Drop every cluster whose `last_seen_ms` is older than
@@ -529,5 +614,85 @@ mod tests {
         let a = DiVector::from_arrays(vec![0.0, 0.0], vec![0.0, 0.0]).unwrap();
         let b = DiVector::from_arrays(vec![1.0, 1.0], vec![0.0, 0.0]).unwrap();
         assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn with_max_clusters_rejects_zero() {
+        let c: AlertClusterer<String, 4> = AlertClusterer::new(0.95, 60_000).unwrap();
+        assert!(c.with_max_clusters(0).is_err());
+    }
+
+    /// Build an `AlertRecord` with an orthogonal synthetic
+    /// `DiVector` so cosine similarity between distinct records is
+    /// exactly zero — decouples the cap-enforcement test from the
+    /// forest's attribution behaviour.
+    fn orthogonal_rec(slot: usize, ts: u64) -> AlertRecord<String, 4> {
+        let mut high = alloc::vec![0.0_f64; 4];
+        let mut low = alloc::vec![0.0_f64; 4];
+        let idx = slot % 4;
+        if (slot / 4).is_multiple_of(2) {
+            high[idx] = 1.0;
+        } else {
+            low[idx] = 1.0;
+        }
+        let attr = DiVector::from_arrays(high, low).unwrap();
+        let baseline = anomstream_core::forensic::ForensicBaseline::<4> {
+            observed: [0.0; 4],
+            expected: [0.0; 4],
+            stddev: [0.0; 4],
+            delta: [0.0; 4],
+            zscore: [0.0; 4],
+            live_points: 0,
+        };
+        AlertRecord::new(
+            None,
+            ts,
+            [0.0; 4],
+            AnomalyScore::new(1.0).unwrap(),
+            None,
+            None,
+            attr,
+            baseline,
+        )
+    }
+
+    #[test]
+    fn observe_enforces_cluster_cap_via_lru_eviction() {
+        let mut c: AlertClusterer<String, 4> = AlertClusterer::new(0.5, u64::MAX)
+            .unwrap()
+            .with_max_clusters(3)
+            .unwrap();
+        // 8 orthogonal attributions — each opens its own cluster.
+        // After the 4th the cap of 3 must start evicting.
+        for i in 0..8 {
+            let _ = c.observe(orthogonal_rec(i, 1_000 + i as u64));
+            assert!(
+                c.len() <= 3,
+                "cluster cap breached at iteration {i}: len = {}",
+                c.len()
+            );
+        }
+        assert_eq!(c.len(), 3);
+        // Earliest timestamps must have been evicted by LRU.
+        let live_first_seen: Vec<u64> = c.clusters().iter().map(|cl| cl.first_seen_ms).collect();
+        for ts in [1000_u64, 1001, 1002, 1003] {
+            assert!(
+                !live_first_seen.contains(&ts),
+                "ts {ts} should have been evicted; live = {live_first_seen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn with_max_clusters_trims_live_pool() {
+        let mut c: AlertClusterer<String, 4> = AlertClusterer::new(0.5, u64::MAX).unwrap();
+        for i in 0..5 {
+            let _ = c.observe(orthogonal_rec(i, 1_000 + i as u64));
+        }
+        assert!(c.len() >= 4);
+        // Shrinking the cap below current len must trim eagerly.
+        let c = c.with_max_clusters(2).unwrap();
+        assert_eq!(c.len(), 2);
+        assert_eq!(c.max_clusters(), 2);
     }
 }

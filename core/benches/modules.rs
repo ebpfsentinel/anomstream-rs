@@ -581,7 +581,7 @@ fn bench_count_min_sketch(c: &mut Criterion) {
     let mut group = c.benchmark_group("count_min_sketch");
 
     group.bench_function("increment_2048x4", |b| {
-        let mut cms = CountMinSketch::new(2048, 4);
+        let mut cms = CountMinSketch::new(2048, 4).expect("cms build");
         let mut rng = ChaCha8Rng::seed_from_u64(2026);
         b.iter(|| {
             let key: u64 = rng.random();
@@ -590,7 +590,7 @@ fn bench_count_min_sketch(c: &mut Criterion) {
     });
 
     group.bench_function("estimate_2048x4", |b| {
-        let mut cms = CountMinSketch::new(2048, 4);
+        let mut cms = CountMinSketch::new(2048, 4).expect("cms build");
         let mut rng = ChaCha8Rng::seed_from_u64(2026);
         for _ in 0..10_000_u64 {
             let key: u64 = rng.random();
@@ -605,7 +605,7 @@ fn bench_count_min_sketch(c: &mut Criterion) {
     });
 
     group.bench_function("reset_2048x4", |b| {
-        let mut cms = CountMinSketch::new(2048, 4);
+        let mut cms = CountMinSketch::new(2048, 4).expect("cms build");
         for i in 0..1_000_u64 {
             cms.increment(&i.to_le_bytes(), 1);
         }

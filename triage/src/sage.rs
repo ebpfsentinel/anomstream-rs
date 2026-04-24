@@ -39,6 +39,13 @@ use anomstream_core::forest::RandomCutForest;
 /// estimate at linear cost.
 pub const DEFAULT_PERMUTATIONS: usize = 64;
 
+/// Upper bound on permutations. Guards against caller-controlled
+/// compute bombs: each permutation costs `D + 1` forest scores,
+/// so `1e9 × 16 = 1.6 × 10¹⁰` traversals per `explain()` call.
+/// 65 536 keeps the worst-case at `~4 s` on a modern core for
+/// `D = 16` — ample convergence for a Monte-Carlo estimator.
+pub const MAX_PERMUTATIONS: usize = 65_536;
+
 /// Default RNG seed — reproducible attributions across runs.
 pub const DEFAULT_SEED: u64 = 2026;
 
@@ -100,15 +107,16 @@ impl<const D: usize> SageEstimator<D> {
     /// # Errors
     ///
     /// Returns [`RcfError::InvalidConfig`] on non-finite `baseline`
-    /// components or `permutations == 0`.
+    /// components, `permutations == 0`, or
+    /// `permutations > MAX_PERMUTATIONS`.
     pub fn new(baseline: [f64; D], permutations: usize, seed: u64) -> RcfResult<Self> {
         if !baseline.iter().all(|v| v.is_finite()) {
             return Err(RcfError::NaNValue);
         }
-        if permutations == 0 {
-            return Err(RcfError::InvalidConfig(
-                "SageEstimator: permutations must be > 0".into(),
-            ));
+        if permutations == 0 || permutations > MAX_PERMUTATIONS {
+            return Err(RcfError::InvalidConfig(format!(
+                "SageEstimator: permutations {permutations} out of (0, {MAX_PERMUTATIONS}]"
+            )));
         }
         Ok(Self {
             baseline,
@@ -217,6 +225,12 @@ mod tests {
     fn new_rejects_invalid_params() {
         assert!(SageEstimator::<2>::new([f64::NAN, 0.0], 10, 0).is_err());
         assert!(SageEstimator::<2>::new([0.0, 0.0], 0, 0).is_err());
+    }
+
+    #[test]
+    fn new_rejects_oversized_permutations() {
+        assert!(SageEstimator::<2>::new([0.0, 0.0], MAX_PERMUTATIONS + 1, 0).is_err());
+        assert!(SageEstimator::<2>::new([0.0, 0.0], usize::MAX, 0).is_err());
     }
 
     #[test]

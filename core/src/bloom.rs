@@ -46,6 +46,14 @@ pub const DEFAULT_FALSE_POSITIVE_RATE: f64 = 0.01;
 /// (`p ≈ 2⁻⁶⁴`).
 pub const MAX_HASHES: u32 = 64;
 
+/// Maximum bit count — 1 Gibit = 128 MiB bit bank. Caps the
+/// allocation an attacker-controlled `(capacity, fpr)` pair can
+/// request. `n = 10⁸` IOCs at `p = 0.01` already lands around
+/// 150 MiB of bit bank, which exceeds this cap; anything beyond
+/// sits in sharded-filter territory and should be built from
+/// multiple filters, not one giant bank.
+pub const MAX_NUM_BITS: usize = 1 << 30;
+
 /// Probabilistic set-membership sketch. `insert` is O(k);
 /// `contains` is O(k) with zero false negatives and a tunable
 /// false-positive rate.
@@ -97,9 +105,10 @@ impl TryFrom<BloomFilterShadow> for BloomFilter {
     type Error = RcfError;
 
     fn try_from(raw: BloomFilterShadow) -> Result<Self, Self::Error> {
-        if raw.num_bits == 0 {
-            return Err(RcfError::InvalidConfig(alloc::string::ToString::to_string(
-                "BloomFilter: num_bits must be > 0",
+        if raw.num_bits == 0 || raw.num_bits > MAX_NUM_BITS {
+            return Err(RcfError::InvalidConfig(alloc::format!(
+                "BloomFilter: num_bits {} out of (0, {MAX_NUM_BITS}]",
+                raw.num_bits
             )));
         }
         if raw.num_hashes == 0 || raw.num_hashes > MAX_HASHES {
@@ -173,11 +182,12 @@ impl BloomFilter {
     /// # Errors
     ///
     /// Returns [`RcfError::InvalidConfig`] on `num_bits == 0`,
-    /// `num_hashes == 0`, or `num_hashes > MAX_HASHES`.
+    /// `num_bits > MAX_NUM_BITS`, `num_hashes == 0`, or
+    /// `num_hashes > MAX_HASHES`.
     pub fn with_params(num_bits: usize, num_hashes: u32) -> RcfResult<Self> {
-        if num_bits == 0 {
-            return Err(RcfError::InvalidConfig(alloc::string::ToString::to_string(
-                "BloomFilter: num_bits must be > 0",
+        if num_bits == 0 || num_bits > MAX_NUM_BITS {
+            return Err(RcfError::InvalidConfig(alloc::format!(
+                "BloomFilter: num_bits {num_bits} out of (0, {MAX_NUM_BITS}]"
             )));
         }
         if num_hashes == 0 || num_hashes > MAX_HASHES {
@@ -376,6 +386,12 @@ mod tests {
         assert!(BloomFilter::with_params(0, 4).is_err());
         assert!(BloomFilter::with_params(1_024, 0).is_err());
         assert!(BloomFilter::with_params(1_024, MAX_HASHES + 1).is_err());
+    }
+
+    #[test]
+    fn with_params_rejects_oversized_num_bits() {
+        assert!(BloomFilter::with_params(MAX_NUM_BITS + 1, 4).is_err());
+        assert!(BloomFilter::with_params(usize::MAX, 4).is_err());
     }
 
     #[test]

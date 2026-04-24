@@ -1222,6 +1222,32 @@ and every `.observe()` / `.update()` / `.record()` /
 verdict is `#[must_use = "…"]`. Drops in hot paths must use
 `let _ = detector.observe(x);` explicitly.
 
+### Allocation caps (DoS hardening)
+
+Caller-supplied sizing parameters on types that allocate
+proportionally to their inputs are bounded by `MAX_*` constants
+at construction so an attacker-controlled
+`new(width, depth, …)` call cannot force an OOM:
+
+- `CountMinSketch::new(width, depth)` — `width ≤ MAX_WIDTH` (262 144)
+  and `depth ≤ MAX_DEPTH` (16). Caps worst-case allocation at
+  ~32 MiB of counter table. `new` now returns `RcfResult<Self>`.
+- `BloomFilter::with_params(num_bits, num_hashes)` —
+  `num_bits ≤ MAX_NUM_BITS` (1 Gibit = 128 MiB of bit bank),
+  `num_hashes ≤ MAX_HASHES` (64). Deserialize path enforces the
+  same cap via `BloomFilterShadow`'s `TryFrom`.
+- `SageEstimator::new(baseline, permutations, seed)` —
+  `permutations ≤ MAX_PERMUTATIONS` (65 536). Each permutation
+  triggers `D + 1` forest scores; the cap bounds the worst-case
+  `explain()` cost at ~4 s for `D = 16` on a modern core.
+- `AlertClusterer` — active-cluster pool bounded by
+  `DEFAULT_MAX_CLUSTERS` (16 384) and overridable via
+  `with_max_clusters(max)`. On cap hit, the oldest cluster
+  (smallest `last_seen_ms`) is LRU-evicted before a new one opens.
+  Protects against adversarial high-cardinality attribution
+  streams that would otherwise keep opening fresh clusters
+  within `window_ms`.
+
 ### Serde deserialization hardening
 
 All stateful public types that derive `Deserialize` route through
