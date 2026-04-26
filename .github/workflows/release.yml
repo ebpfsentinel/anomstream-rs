@@ -132,12 +132,52 @@ jobs:
           version: ${{ needs.prepare.outputs.version }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Dependency order matters — each member depends on the ones
-      # above via a version requirement that must resolve against
-      # crates.io (or the in-flight dry-run graph). `--allow-dirty`
-      # covers the un-committed Cargo.lock + stamped sources that
-      # appear in CI workspaces.
       - run: cargo publish --dry-run -p anomstream-core --allow-dirty
       - run: cargo publish --dry-run -p anomstream-triage --allow-dirty
       - run: cargo publish --dry-run -p anomstream-hotpath --allow-dirty
       - run: cargo publish --dry-run -p anomstream --allow-dirty
+
+  # ── Tag + GitHub Release (only after gate + audit + dry-run succeed) ──
+  publish:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    needs: [prepare, gate, audit, publish-dry-run]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create and push tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ needs.prepare.outputs.tag }}"
+          git tag "${TAG}"
+          git push origin "${TAG}"
+          echo "Created tag: ${TAG}"
+
+      - name: Extract release notes from CHANGELOG
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          NOTES=""
+          if [ -f CHANGELOG.md ]; then
+            NOTES=$(awk -v ver="$VERSION" '
+              /^## / { if (found) exit; if (index($0, ver)) found=1; next }
+              found { print }
+            ' CHANGELOG.md)
+          fi
+          if [ -z "$NOTES" ]; then
+            NOTES="Release ${{ needs.prepare.outputs.tag }}"
+          fi
+          echo "$NOTES" > release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ needs.prepare.outputs.tag }}" \
+            --title "anomstream ${{ needs.prepare.outputs.tag }}" \
+            --notes-file release-notes.md
