@@ -18,10 +18,19 @@ runs:
           echo "::error::Invalid version format: '$VERSION' (expected YYYY.M.X)"
           exit 1
         fi
+        # GNU `sed -i` and BSD `sed -i` (macOS) disagree on the in-place
+        # syntax — BSD requires an explicit backup-suffix argument. Use
+        # a temp-file rewrite so the action is portable across both
+        # ubuntu-latest and macos-latest runners.
+        rewrite() {
+          local file="$1" pattern="$2"
+          sed "$pattern" "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+        }
         # Cargo.toml — bump both workspace.package.version and path-dep version specs.
-        find . -name Cargo.toml -exec grep -l '0.0.0-dev' {} + \
-          | xargs sed -i "s/\"0.0.0-dev\"/\"${VERSION}\"/g"
+        while IFS= read -r f; do
+          rewrite "$f" "s/\"0.0.0-dev\"/\"${VERSION}\"/g"
+        done < <(find . -name Cargo.toml -exec grep -l '0.0.0-dev' {} +)
         # README.md — bump documented `cargo add` version snippets.
         if [ -f README.md ]; then
-          sed -i "s/0\.0\.0-dev/${VERSION}/g" README.md
+          rewrite README.md "s/0\.0\.0-dev/${VERSION}/g"
         fi

@@ -106,6 +106,13 @@ jobs:
   minimal-versions:
     name: minimal-versions (nightly -Z minimal-versions)
     runs-on: ubuntu-latest
+    # `rust-toolchain.toml` pins `channel = "stable"`, which rustup
+    # honours at every cargo invocation and would override the
+    # nightly installed by `dtolnay/rust-toolchain@nightly`. Setting
+    # `RUSTUP_TOOLCHAIN` at job level shadows the toml so every
+    # cargo command in this job runs under nightly.
+    env:
+      RUSTUP_TOOLCHAIN: nightly
     steps:
       - uses: actions/checkout@v6
       - if: inputs.version != ''
@@ -118,10 +125,9 @@ jobs:
       # `Cargo.toml` constraint permits. Catches drift where a loose
       # requirement (`foo = "1"`) relies on features only added in
       # `1.x.y+n`. Nightly is the only toolchain that ships
-      # `-Z minimal-versions`; we still build under stable afterwards
-      # to confirm the minimal set compiles cleanly.
+      # `-Z minimal-versions`.
       - shell: bash
-        run: cargo +nightly update -Z minimal-versions
+        run: cargo update -Z minimal-versions
       - uses: ./.github/actions/cargo-check
         with:
           scope: --workspace --all-features

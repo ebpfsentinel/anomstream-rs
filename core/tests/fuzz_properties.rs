@@ -125,7 +125,9 @@ proptest! {
     }
 
     /// `score_many` must be observationally equivalent to a serial
-    /// `score` loop, element-wise and bit-exact.
+    /// `score` loop, element-wise. Under rayon, parallel reduction
+    /// may reorder floating accumulations by a ULP — the tolerance
+    /// matches `bulk_scoring::score_many_matches_individual_calls`.
     #[test]
     fn score_many_equals_serial_score(
         seed in 0_u64..1_000,
@@ -138,7 +140,10 @@ proptest! {
         for (i, p) in probes.iter().enumerate() {
             let s: f64 = forest.score(p).expect("serial").into();
             let b: f64 = bulk[i].into();
-            prop_assert_eq!(s, b);
+            prop_assert!(
+                (s - b).abs() < 1e-10,
+                "idx {}: serial={} bulk={} delta={}", i, s, b, (s - b).abs(),
+            );
         }
     }
 
