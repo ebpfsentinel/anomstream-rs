@@ -6,6 +6,7 @@
 #![allow(clippy::cast_precision_loss)]
 
 use anomstream_hotpath::{PrefixRateCap, UpdateSampler, update_channel};
+use core::num::{NonZeroU32, NonZeroU64};
 use criterion::{Criterion, criterion_group, criterion_main};
 use mimalloc::MiMalloc;
 use rand::{Rng, SeedableRng};
@@ -58,13 +59,33 @@ fn bench_hot_path_prefix_cap(c: &mut Criterion) {
     let mut group = c.benchmark_group("hot_path_prefix_cap");
 
     group.bench_function("check_and_record_100cap_1s", |b| {
-        let cap = PrefixRateCap::new(100, 1_000);
+        let cap = PrefixRateCap::new(
+            NonZeroU32::new(100).expect("non-zero"),
+            NonZeroU64::new(1_000).expect("non-zero"),
+        );
         let mut rng = ChaCha8Rng::seed_from_u64(2026);
         let mut now_ms = 0_u64;
         b.iter(|| {
             let h: u64 = rng.random();
             now_ms = now_ms.wrapping_add(1);
             let v = cap.check_and_record(black_box(h), now_ms);
+            black_box(v);
+        });
+    });
+
+    // Quantify the gain from batched metrics emission. With
+    // METRICS_BATCH_SIZE = 64 the sink dispatch lands once per 64
+    // ops on the noop sink path; this bench drives the bare hot
+    // path so any regression in the batching helper surfaces here.
+    group.bench_function("check_and_record_batched_dispatch", |b| {
+        let cap = PrefixRateCap::new(
+            NonZeroU32::new(1_000_000).expect("non-zero"),
+            NonZeroU64::new(60_000).expect("non-zero"),
+        );
+        let mut h: u64 = 0;
+        b.iter(|| {
+            h = h.wrapping_add(1);
+            let v = cap.check_and_record(black_box(h), 0);
             black_box(v);
         });
     });

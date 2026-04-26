@@ -176,12 +176,16 @@ fn triage_std_gated_types_reachable_via_facade() {
 #[test]
 fn hot_path_sampler_plus_rate_cap_via_facade() {
     use anomstream::hot_path::{PrefixRateCap, UpdateSampler};
+    use core::num::{NonZeroU32, NonZeroU64};
     let sampler = UpdateSampler::new(4);
     // Stride sampler: 1st call true (counter = 0 % 4 == 0), next 3 false.
     assert!(sampler.accept_stride());
     assert!(!sampler.accept_stride());
 
-    let cap = PrefixRateCap::new(10, 1_000);
+    let cap = PrefixRateCap::new(
+        NonZeroU32::new(10).unwrap(),
+        NonZeroU64::new(1_000).unwrap(),
+    );
     assert!(cap.check_and_record(0x1234_5678_u64, 0));
 }
 
@@ -191,6 +195,18 @@ fn hot_path_sampler_plus_rate_cap_via_facade() {
 fn hot_path_update_channel_reachable_via_facade() {
     use anomstream::hot_path::{UpdateConsumer, UpdateProducer, update_channel};
     let (_p, _c): (UpdateProducer<4>, UpdateConsumer<4>) = update_channel(8);
+}
+
+/// `try_update_channel` Result variant + `MAX_CHANNEL_CAPACITY`
+/// const reachable through the facade.
+#[cfg(feature = "hotpath")]
+#[test]
+fn hot_path_try_update_channel_via_facade() {
+    use anomstream::hot_path::{MAX_CHANNEL_CAPACITY, try_update_channel};
+    assert!(try_update_channel::<4>(0).is_err());
+    assert!(try_update_channel::<4>(MAX_CHANNEL_CAPACITY + 1).is_err());
+    let (p, _c) = try_update_channel::<4>(8).unwrap();
+    p.flush_metrics();
 }
 
 // --- Audit-integrity smoke -----------------------------------
@@ -251,6 +267,9 @@ fn triage_lib_namespace_reaches_deep_paths() {
 #[cfg(feature = "hotpath")]
 #[test]
 fn hotpath_lib_namespace_reaches_deep_paths() {
-    let _: anomstream::hotpath_lib::PrefixRateCap =
-        anomstream::hotpath_lib::PrefixRateCap::new(1, 1);
+    use core::num::{NonZeroU32, NonZeroU64};
+    let _: anomstream::hotpath_lib::PrefixRateCap = anomstream::hotpath_lib::PrefixRateCap::new(
+        NonZeroU32::new(1).unwrap(),
+        NonZeroU64::new(1).unwrap(),
+    );
 }

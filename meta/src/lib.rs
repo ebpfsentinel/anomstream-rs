@@ -162,7 +162,8 @@ pub use anomstream_triage::{
 pub mod hot_path {
     #[doc(inline)]
     pub use anomstream_hotpath::{
-        PrefixRateCap, UpdateConsumer, UpdateProducer, UpdateSampler, update_channel,
+        MAX_CHANNEL_CAPACITY, METRICS_BATCH_SIZE, PrefixRateCap, UpdateConsumer, UpdateProducer,
+        UpdateSampler, try_update_channel, try_update_channel_with_sink, update_channel,
         update_channel_with_sink,
     };
 }

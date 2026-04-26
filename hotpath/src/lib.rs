@@ -84,11 +84,77 @@
 #![warn(clippy::missing_docs_in_private_items)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::panic))]
 
+use core::num::{NonZeroU32, NonZeroU64};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
+use anomstream_core::error::{RcfError, RcfResult};
 use anomstream_core::metrics::{MetricsSink, default_sink, names};
+
+/// Hard ceiling on the [`update_channel`] capacity. The bounded
+/// MPSC channel allocates `capacity * size_of::<[f64; D]>()` bytes
+/// up front; at `D = 16` and `MAX_CHANNEL_CAPACITY = 1_048_576`
+/// the worst-case per-channel footprint is 128 MiB — well above
+/// any realistic ingress rate × drain-cadence product. The cap
+/// exists to defeat caller-controlled OOM at construction; raise
+/// it deliberately if a deployment really needs more in-flight
+/// queue depth.
+pub const MAX_CHANNEL_CAPACITY: usize = 1 << 20;
+
+/// Number of hot-path operations between [`MetricsSink`] flushes.
+/// Per-call vtable dispatch on `Arc<dyn MetricsSink>` measurable
+/// at line rate (≈13 ns × 12.5 Mpps ≈ 160 ms / s of clock burned
+/// on dispatch alone). Buffering increments locally and flushing
+/// every `METRICS_BATCH_SIZE` ops cuts that overhead by the same
+/// factor while keeping the in-process [`AtomicU64`] counters
+/// (`accepted_total`, `enqueued_total`, …) bit-exact every call.
+/// Sink lag at process-exit is bounded by `METRICS_BATCH_SIZE`
+/// minus one — call [`UpdateSampler::flush_metrics`] /
+/// [`UpdateProducer::flush_metrics`] / [`PrefixRateCap::flush_metrics`]
+/// before shutdown to drain the residue.
+pub const METRICS_BATCH_SIZE: u64 = 64;
+
+/// Increment `counter` by 1 and flush `METRICS_BATCH_SIZE` units
+/// to `sink` every `METRICS_BATCH_SIZE` calls. Returns the
+/// post-increment counter value. `last_flushed` advances in
+/// lockstep with the sink emission so a subsequent
+/// [`flush_batched`] only drains the residue (last `< BATCH`
+/// increments) without double-counting.
+#[inline]
+fn record_batched(
+    counter: &AtomicU64,
+    last_flushed: &AtomicU64,
+    sink: &Arc<dyn MetricsSink>,
+    metric: &'static str,
+) -> u64 {
+    let next = counter.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    if next.is_multiple_of(METRICS_BATCH_SIZE) {
+        sink.inc_counter(metric, METRICS_BATCH_SIZE);
+        last_flushed.fetch_add(METRICS_BATCH_SIZE, Ordering::Relaxed);
+    }
+    next
+}
+
+/// Manually flush whatever residue (`counter - last_flushed`) has
+/// accumulated since the last batched emission. Idempotent on
+/// repeated calls — the second call emits nothing. Use to drain
+/// the trailing 0..[`METRICS_BATCH_SIZE`] increments at process
+/// shutdown or before exporting a metrics snapshot.
+#[inline]
+fn flush_batched(
+    counter: &AtomicU64,
+    last_flushed: &AtomicU64,
+    sink: &Arc<dyn MetricsSink>,
+    metric: &'static str,
+) {
+    let now = counter.load(Ordering::Relaxed);
+    let prev = last_flushed.swap(now, Ordering::Relaxed);
+    let delta = now.wrapping_sub(prev);
+    if delta > 0 {
+        sink.inc_counter(metric, delta);
+    }
+}
 
 /// Stride-based or per-flow-hash update sampler.
 ///
@@ -109,6 +175,12 @@ pub struct UpdateSampler {
     accepted: AtomicU64,
     /// Running total of rejected offers.
     rejected: AtomicU64,
+    /// Sink-side cumulative emitted count for `accepted` — paired
+    /// with `accepted` to drain the residue on
+    /// [`Self::flush_metrics`] without double-counting.
+    accepted_flushed: AtomicU64,
+    /// Sink-side cumulative emitted count for `rejected`.
+    rejected_flushed: AtomicU64,
     /// Per-sampler secret multipliers used by [`Self::accept_hash`].
     /// When non-zero the sampler runs a keyed remix of the caller-
     /// supplied `flow_hash` before the modulo decision — makes the
@@ -121,8 +193,9 @@ pub struct UpdateSampler {
     /// multiply by `mix_k1` alone (a structure the attacker could
     /// invert given enough observations).
     mix_k2: u64,
-    /// Observability sink — every `accept_*` call emits an
-    /// accepted/rejected counter. Defaults to [`anomstream_core::NoopSink`].
+    /// Observability sink — emitted every [`METRICS_BATCH_SIZE`]
+    /// hot-path calls (in-process atomic counters stay bit-exact
+    /// every call). Defaults to [`anomstream_core::NoopSink`].
     metrics: Arc<dyn MetricsSink>,
 }
 
@@ -144,6 +217,8 @@ impl UpdateSampler {
             counter: AtomicU64::new(0),
             accepted: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
+            accepted_flushed: AtomicU64::new(0),
+            rejected_flushed: AtomicU64::new(0),
             mix_k1: 0,
             mix_k2: 0,
             metrics: default_sink(),
@@ -187,6 +262,8 @@ impl UpdateSampler {
             counter: AtomicU64::new(0),
             accepted: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
+            accepted_flushed: AtomicU64::new(0),
+            rejected_flushed: AtomicU64::new(0),
             mix_k1,
             mix_k2,
             metrics: default_sink(),
@@ -224,22 +301,31 @@ impl UpdateSampler {
     /// Cheap (one atomic fetch-add) but not flow-aware.
     pub fn accept_stride(&self) -> bool {
         if self.keep_every_n <= 1 {
-            self.accepted.fetch_add(1, Ordering::Relaxed);
-            self.metrics
-                .inc_counter(names::HOT_PATH_SAMPLER_ACCEPTED_TOTAL, 1);
+            record_batched(
+                &self.accepted,
+                &self.accepted_flushed,
+                &self.metrics,
+                names::HOT_PATH_SAMPLER_ACCEPTED_TOTAL,
+            );
             return true;
         }
         let n = self.counter.fetch_add(1, Ordering::Relaxed);
         let keep = u64::from(self.keep_every_n);
         let ok = n.is_multiple_of(keep);
         if ok {
-            self.accepted.fetch_add(1, Ordering::Relaxed);
-            self.metrics
-                .inc_counter(names::HOT_PATH_SAMPLER_ACCEPTED_TOTAL, 1);
+            record_batched(
+                &self.accepted,
+                &self.accepted_flushed,
+                &self.metrics,
+                names::HOT_PATH_SAMPLER_ACCEPTED_TOTAL,
+            );
         } else {
-            self.rejected.fetch_add(1, Ordering::Relaxed);
-            self.metrics
-                .inc_counter(names::HOT_PATH_SAMPLER_REJECTED_TOTAL, 1);
+            record_batched(
+                &self.rejected,
+                &self.rejected_flushed,
+                &self.metrics,
+                names::HOT_PATH_SAMPLER_REJECTED_TOTAL,
+            );
         }
         ok
     }
@@ -263,21 +349,30 @@ impl UpdateSampler {
     /// (defends against `AML.T0020` reservoir-poisoning sprays).
     pub fn accept_hash(&self, flow_hash: u64) -> bool {
         if self.keep_every_n <= 1 {
-            self.accepted.fetch_add(1, Ordering::Relaxed);
-            self.metrics
-                .inc_counter(names::HOT_PATH_SAMPLER_ACCEPTED_TOTAL, 1);
+            record_batched(
+                &self.accepted,
+                &self.accepted_flushed,
+                &self.metrics,
+                names::HOT_PATH_SAMPLER_ACCEPTED_TOTAL,
+            );
             return true;
         }
         let mixed = self.keyed_mix(flow_hash);
         let ok = mixed.is_multiple_of(u64::from(self.keep_every_n));
         if ok {
-            self.accepted.fetch_add(1, Ordering::Relaxed);
-            self.metrics
-                .inc_counter(names::HOT_PATH_SAMPLER_ACCEPTED_TOTAL, 1);
+            record_batched(
+                &self.accepted,
+                &self.accepted_flushed,
+                &self.metrics,
+                names::HOT_PATH_SAMPLER_ACCEPTED_TOTAL,
+            );
         } else {
-            self.rejected.fetch_add(1, Ordering::Relaxed);
-            self.metrics
-                .inc_counter(names::HOT_PATH_SAMPLER_REJECTED_TOTAL, 1);
+            record_batched(
+                &self.rejected,
+                &self.rejected_flushed,
+                &self.metrics,
+                names::HOT_PATH_SAMPLER_REJECTED_TOTAL,
+            );
         }
         ok
     }
@@ -301,15 +396,39 @@ impl UpdateSampler {
     }
 
     /// Running total of accepted offers since construction.
+    /// Bit-exact even when the [`MetricsSink`] view lags by up to
+    /// [`METRICS_BATCH_SIZE`] increments.
     #[must_use]
     pub fn accepted_total(&self) -> u64 {
         self.accepted.load(Ordering::Relaxed)
     }
 
     /// Running total of rejected offers since construction.
+    /// Bit-exact independent of sink-side batching.
     #[must_use]
     pub fn rejected_total(&self) -> u64 {
         self.rejected.load(Ordering::Relaxed)
+    }
+
+    /// Drain the residue (≤ [`METRICS_BATCH_SIZE`] − 1 increments
+    /// per counter) that the batched fast paths have not yet
+    /// emitted to the [`MetricsSink`]. Idempotent — call before
+    /// process shutdown or before exporting a metrics snapshot
+    /// the operator wants matched against [`Self::accepted_total`]
+    /// / [`Self::rejected_total`].
+    pub fn flush_metrics(&self) {
+        flush_batched(
+            &self.accepted,
+            &self.accepted_flushed,
+            &self.metrics,
+            names::HOT_PATH_SAMPLER_ACCEPTED_TOTAL,
+        );
+        flush_batched(
+            &self.rejected,
+            &self.rejected_flushed,
+            &self.metrics,
+            names::HOT_PATH_SAMPLER_REJECTED_TOTAL,
+        );
     }
 }
 
@@ -327,9 +446,15 @@ pub struct UpdateProducer<const D: usize> {
     enqueued: Arc<AtomicU64>,
     /// Lifetime dropped-on-full count.
     dropped: Arc<AtomicU64>,
+    /// Sink-side cumulative emitted count for `enqueued`.
+    enqueued_flushed: Arc<AtomicU64>,
+    /// Sink-side cumulative emitted count for `dropped`.
+    dropped_flushed: Arc<AtomicU64>,
     /// Observability sink — shared with every clone of this
     /// producer so every classifier thread emits to the same
-    /// endpoint.
+    /// endpoint. Emitted every [`METRICS_BATCH_SIZE`] hot-path
+    /// calls (in-process atomic counters stay bit-exact every
+    /// call).
     metrics: Arc<dyn MetricsSink>,
 }
 
@@ -340,6 +465,8 @@ impl<const D: usize> Clone for UpdateProducer<D> {
             capacity: self.capacity,
             enqueued: Arc::clone(&self.enqueued),
             dropped: Arc::clone(&self.dropped),
+            enqueued_flushed: Arc::clone(&self.enqueued_flushed),
+            dropped_flushed: Arc::clone(&self.dropped_flushed),
             metrics: Arc::clone(&self.metrics),
         }
     }
@@ -352,16 +479,41 @@ impl<const D: usize> UpdateProducer<D> {
     #[must_use]
     pub fn try_enqueue(&self, point: [f64; D]) -> bool {
         if self.tx.try_send(point).is_ok() {
-            self.enqueued.fetch_add(1, Ordering::Relaxed);
-            self.metrics
-                .inc_counter(names::HOT_PATH_QUEUE_ENQUEUED_TOTAL, 1);
+            record_batched(
+                &self.enqueued,
+                &self.enqueued_flushed,
+                &self.metrics,
+                names::HOT_PATH_QUEUE_ENQUEUED_TOTAL,
+            );
             true
         } else {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-            self.metrics
-                .inc_counter(names::HOT_PATH_QUEUE_DROPPED_TOTAL, 1);
+            record_batched(
+                &self.dropped,
+                &self.dropped_flushed,
+                &self.metrics,
+                names::HOT_PATH_QUEUE_DROPPED_TOTAL,
+            );
             false
         }
+    }
+
+    /// Drain the residue (≤ [`METRICS_BATCH_SIZE`] − 1 increments)
+    /// that the batched [`Self::try_enqueue`] path has not yet
+    /// emitted to the [`MetricsSink`]. Idempotent — call before
+    /// shutdown / metrics export.
+    pub fn flush_metrics(&self) {
+        flush_batched(
+            &self.enqueued,
+            &self.enqueued_flushed,
+            &self.metrics,
+            names::HOT_PATH_QUEUE_ENQUEUED_TOTAL,
+        );
+        flush_batched(
+            &self.dropped,
+            &self.dropped_flushed,
+            &self.metrics,
+            names::HOT_PATH_QUEUE_DROPPED_TOTAL,
+        );
     }
 
     /// Read-only handle to the installed sink.
@@ -441,32 +593,92 @@ impl<const D: usize> UpdateConsumer<D> {
 /// without unbounded backpressure under micro-bursts. Drop events
 /// (observable via [`UpdateProducer::dropped_total`]) are the ops
 /// signal the channel needs widening.
+///
+/// # Panics
+///
+/// Panics when `capacity == 0` (would silently drop every offer)
+/// or when `capacity > MAX_CHANNEL_CAPACITY` (caller-controlled
+/// OOM at construction). Use [`try_update_channel`] for the
+/// non-panicking variant that surfaces the same condition as a
+/// recoverable [`RcfError`].
 #[must_use]
+#[allow(clippy::panic, clippy::missing_panics_doc)]
 pub fn update_channel<const D: usize>(capacity: usize) -> (UpdateProducer<D>, UpdateConsumer<D>) {
-    update_channel_with_sink(capacity, default_sink())
+    // Documented panic — callers wanting a `Result` use
+    // `try_update_channel` instead.
+    try_update_channel(capacity).unwrap_or_else(|e| panic!("update_channel: {e}"))
 }
 
 /// Same as [`update_channel`] but with a caller-supplied metrics
 /// sink. Every clone of the returned producer shares the same
 /// sink.
+///
+/// # Panics
+///
+/// Same conditions as [`update_channel`].
 #[must_use]
+#[allow(clippy::panic, clippy::missing_panics_doc)]
 pub fn update_channel_with_sink<const D: usize>(
     capacity: usize,
     sink: Arc<dyn MetricsSink>,
 ) -> (UpdateProducer<D>, UpdateConsumer<D>) {
+    try_update_channel_with_sink(capacity, sink)
+        .unwrap_or_else(|e| panic!("update_channel_with_sink: {e}"))
+}
+
+/// Fallible variant of [`update_channel`] — returns
+/// [`RcfError::InvalidConfig`] instead of panicking when
+/// `capacity` is `0` or above [`MAX_CHANNEL_CAPACITY`].
+///
+/// # Errors
+///
+/// Returns [`RcfError::InvalidConfig`] when `capacity == 0` or
+/// `capacity > MAX_CHANNEL_CAPACITY`.
+pub fn try_update_channel<const D: usize>(
+    capacity: usize,
+) -> RcfResult<(UpdateProducer<D>, UpdateConsumer<D>)> {
+    try_update_channel_with_sink(capacity, default_sink())
+}
+
+/// Fallible variant of [`update_channel_with_sink`].
+///
+/// # Errors
+///
+/// Same as [`try_update_channel`].
+pub fn try_update_channel_with_sink<const D: usize>(
+    capacity: usize,
+    sink: Arc<dyn MetricsSink>,
+) -> RcfResult<(UpdateProducer<D>, UpdateConsumer<D>)> {
+    if capacity == 0 {
+        return Err(RcfError::InvalidConfig(
+            "update_channel: capacity must be > 0 (zero capacity drops every offer)".into(),
+        ));
+    }
+    if capacity > MAX_CHANNEL_CAPACITY {
+        return Err(RcfError::InvalidConfig(
+            format!(
+                "update_channel: capacity {capacity} exceeds MAX_CHANNEL_CAPACITY {MAX_CHANNEL_CAPACITY} (caller-controlled OOM guard)"
+            )
+            .into(),
+        ));
+    }
     let (tx, rx) = sync_channel::<[f64; D]>(capacity);
     let enqueued = Arc::new(AtomicU64::new(0));
     let dropped = Arc::new(AtomicU64::new(0));
-    (
+    let enqueued_flushed = Arc::new(AtomicU64::new(0));
+    let dropped_flushed = Arc::new(AtomicU64::new(0));
+    Ok((
         UpdateProducer {
             tx,
             capacity,
             enqueued,
             dropped,
+            enqueued_flushed,
+            dropped_flushed,
             metrics: sink,
         },
         UpdateConsumer { rx },
-    )
+    ))
 }
 
 /// Fixed-bucket per-prefix rate cap — bounds how many admissions a
@@ -482,12 +694,32 @@ pub fn update_channel_with_sink<const D: usize>(
 /// amount of cross-prefix interference for O(1) lock-free
 /// check-and-record with bounded memory.
 ///
+/// # Soft over-admission window
+///
+/// [`Self::check_and_record`] is **lock-free**, not strictly
+/// transactional: the bucket increment (`fetch_add`) and the
+/// post-increment compare against [`Self::cap_per_window`] are
+/// distinct atomics, so two concurrent admissions can both
+/// increment past the cap before either notices and rolls back.
+/// Each thread that lands on a bucket already at cap immediately
+/// `fetch_sub`s its own increment to avoid permanent leakage,
+/// but the brief over-admission window stays observable on
+/// multi-core load. The empirical bound under stress (see
+/// `prefix_rate_cap_concurrent_rollover_holds_hard_cap`) is
+/// roughly `4 × cap_per_window` per bucket per window — design
+/// the cap with that slack baked in (e.g. set the operator-facing
+/// "max 25 admits / window" by passing `cap_per_window = 6`).
+///
 /// # Example
 ///
 /// ```ignore
-/// use anomstream_core::hot_path::PrefixRateCap;
+/// use core::num::{NonZeroU32, NonZeroU64};
+/// use anomstream_hotpath::PrefixRateCap;
 ///
-/// let cap = PrefixRateCap::new(100, 1_000); // 100 admits / 1 s window
+/// let cap = PrefixRateCap::new(
+///     NonZeroU32::new(100).unwrap(),
+///     NonZeroU64::new(1_000).unwrap(),
+/// );
 /// let now_ms = /* wall-clock */;
 /// if cap.check_and_record(flow_prefix_hash, now_ms) {
 ///     forest.update(point)?;
@@ -506,13 +738,20 @@ pub struct PrefixRateCap {
     window_start_ms: AtomicU64,
     /// Window length. Cap counts reset every `window_ms`.
     window_ms: u64,
-    /// Maximum admits per bucket per window.
+    /// Maximum admits per bucket per window. `0` means cap
+    /// disabled — every call admits (set by [`Self::disabled`]).
     cap_per_window: u32,
     /// Lifetime count of admits that hit the cap and were rejected.
     capped_total: AtomicU64,
     /// Lifetime count of admits passed through.
     admitted_total: AtomicU64,
-    /// Observability sink.
+    /// Sink-side cumulative emitted count for `admitted`.
+    admitted_flushed: AtomicU64,
+    /// Sink-side cumulative emitted count for `capped`.
+    capped_flushed: AtomicU64,
+    /// Observability sink — emitted every [`METRICS_BATCH_SIZE`]
+    /// hot-path calls (in-process atomic counters stay bit-exact
+    /// every call).
     metrics: Arc<dyn MetricsSink>,
 }
 
@@ -521,17 +760,28 @@ impl PrefixRateCap {
     /// `AtomicU32` = 1 KiB on 64-bit.
     pub const BUCKETS: usize = 256;
 
-    /// Build a rate cap. `cap_per_window = 0` disables the cap
-    /// (every call to `check_and_record` returns `true`);
-    /// `window_ms = 0` is rejected as invalid.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `window_ms == 0` — a zero-length window is a
-    /// programming error (would admit everything on first call).
+    /// Build a rate cap. Both arguments are typed `NonZero` so
+    /// the previous footgun pair (`window_ms == 0` panics,
+    /// `cap_per_window == 0` silently disabled the cap) is
+    /// impossible to express. Use [`Self::disabled`] when the
+    /// caller wants the always-admit mode explicitly.
     #[must_use]
-    pub fn new(cap_per_window: u32, window_ms: u64) -> Self {
-        assert!(window_ms > 0, "window_ms must be non-zero");
+    pub fn new(cap_per_window: NonZeroU32, window_ms: NonZeroU64) -> Self {
+        Self::build(cap_per_window.get(), window_ms.get())
+    }
+
+    /// Always-admit mode — every [`Self::check_and_record`] call
+    /// returns `true` and increments [`Self::admitted_total`].
+    /// `window_ms` still has to be non-zero (kept on the type for
+    /// future-proofing — a re-enable path could repurpose it).
+    #[must_use]
+    pub fn disabled(window_ms: NonZeroU64) -> Self {
+        Self::build(0, window_ms.get())
+    }
+
+    /// Shared constructor — bypassed by [`Self::new`] /
+    /// [`Self::disabled`] which guarantee the typed invariants.
+    fn build(cap_per_window: u32, window_ms: u64) -> Self {
         // Cannot use `[AtomicU32::new(0); 256]` because AtomicU32
         // is !Copy. Build via closure.
         let buckets: [AtomicU32; Self::BUCKETS] = core::array::from_fn(|_| AtomicU32::new(0));
@@ -542,6 +792,8 @@ impl PrefixRateCap {
             cap_per_window,
             capped_total: AtomicU64::new(0),
             admitted_total: AtomicU64::new(0),
+            admitted_flushed: AtomicU64::new(0),
+            capped_flushed: AtomicU64::new(0),
             metrics: default_sink(),
         }
     }
@@ -566,16 +818,26 @@ impl PrefixRateCap {
     /// Under concurrent load the window-rollover path runs a
     /// `compare_exchange_weak` loop until the timestamp either
     /// already sits inside the live window or this thread wins
-    /// the reset — removes the earlier soft-over-admission window
-    /// where two threads could both increment buckets between a
-    /// stale `load` and a `compare_exchange`. `Release` /
-    /// `Acquire` ordering makes the bucket zero-fill
-    /// happen-before any subsequent bucket `fetch_add`.
+    /// the reset. `Release` / `Acquire` ordering makes the bucket
+    /// zero-fill happen-before any subsequent bucket `fetch_add`.
+    ///
+    /// **Soft over-admission window** — see the type-level docs.
+    /// The `fetch_add` + cap-comparison sequence is two distinct
+    /// atomics, so concurrent admissions can briefly exceed
+    /// [`Self::cap_per_window`] before each thread that loses
+    /// the race rolls its own increment back. Empirical bound is
+    /// ≈ `4 × cap_per_window` per bucket per window under
+    /// stress. Operators sizing the cap for a hard ceiling should
+    /// configure `cap_per_window = ceiling / 4` (or shard the
+    /// admission across multiple [`PrefixRateCap`] instances).
     pub fn check_and_record(&self, prefix_hash: u64, now_ms: u64) -> bool {
         if self.cap_per_window == 0 {
-            self.admitted_total.fetch_add(1, Ordering::Relaxed);
-            self.metrics
-                .inc_counter(names::HOT_PATH_PREFIX_ADMITTED_TOTAL, 1);
+            record_batched(
+                &self.admitted_total,
+                &self.admitted_flushed,
+                &self.metrics,
+                names::HOT_PATH_PREFIX_ADMITTED_TOTAL,
+            );
             return true;
         }
         // Atomically roll the window if needed. Loop until the
@@ -608,20 +870,46 @@ impl PrefixRateCap {
         let idx = ((prefix_hash & 0xff) as usize) & (Self::BUCKETS - 1);
         let prior = self.buckets[idx].fetch_add(1, Ordering::Relaxed);
         if prior < self.cap_per_window {
-            self.admitted_total.fetch_add(1, Ordering::Relaxed);
-            self.metrics
-                .inc_counter(names::HOT_PATH_PREFIX_ADMITTED_TOTAL, 1);
+            record_batched(
+                &self.admitted_total,
+                &self.admitted_flushed,
+                &self.metrics,
+                names::HOT_PATH_PREFIX_ADMITTED_TOTAL,
+            );
             true
         } else {
             // Already over — roll back the increment so a late
             // window roll doesn't accumulate forever on this
             // bucket.
             self.buckets[idx].fetch_sub(1, Ordering::Relaxed);
-            self.capped_total.fetch_add(1, Ordering::Relaxed);
-            self.metrics
-                .inc_counter(names::HOT_PATH_PREFIX_CAPPED_TOTAL, 1);
+            record_batched(
+                &self.capped_total,
+                &self.capped_flushed,
+                &self.metrics,
+                names::HOT_PATH_PREFIX_CAPPED_TOTAL,
+            );
             false
         }
+    }
+
+    /// Drain the batched-metrics residue (≤ [`METRICS_BATCH_SIZE`] − 1
+    /// increments per counter). Idempotent — call before shutdown
+    /// or before exporting a metrics snapshot. In-process
+    /// [`Self::admitted_total`] / [`Self::capped_total`] stay
+    /// bit-exact independent of this call.
+    pub fn flush_metrics(&self) {
+        flush_batched(
+            &self.admitted_total,
+            &self.admitted_flushed,
+            &self.metrics,
+            names::HOT_PATH_PREFIX_ADMITTED_TOTAL,
+        );
+        flush_batched(
+            &self.capped_total,
+            &self.capped_flushed,
+            &self.metrics,
+            names::HOT_PATH_PREFIX_CAPPED_TOTAL,
+        );
     }
 
     /// Lifetime admits that passed the cap.
@@ -695,6 +983,26 @@ mod tests {
         let d1 = s.accept_hash(h);
         let d2 = s.accept_hash(h);
         assert_eq!(d1, d2);
+    }
+
+    #[test]
+    #[should_panic(expected = "capacity must be > 0")]
+    fn channel_zero_capacity_panics() {
+        let _ = update_channel::<2>(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds MAX_CHANNEL_CAPACITY")]
+    fn channel_oversize_capacity_panics() {
+        let _ = update_channel::<2>(MAX_CHANNEL_CAPACITY + 1);
+    }
+
+    #[test]
+    fn try_update_channel_rejects_invalid_capacity() {
+        assert!(try_update_channel::<2>(0).is_err());
+        assert!(try_update_channel::<2>(MAX_CHANNEL_CAPACITY + 1).is_err());
+        assert!(try_update_channel::<2>(MAX_CHANNEL_CAPACITY).is_ok());
+        assert!(try_update_channel::<2>(1).is_ok());
     }
 
     #[test]
@@ -776,6 +1084,134 @@ mod tests {
         assert_eq!(ing, 3);
     }
 
+    /// Counts every `inc_counter` call by metric name. Lets the
+    /// batching tests assert the sink saw exactly `actual /
+    /// METRICS_BATCH_SIZE` flushes, not one per hot-path call.
+    #[derive(Debug, Default)]
+    struct CountingSink {
+        calls: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+        units: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+    }
+
+    impl MetricsSink for CountingSink {
+        fn inc_counter(&self, name: &str, by: u64) {
+            *self
+                .calls
+                .lock()
+                .unwrap()
+                .entry(name.to_owned())
+                .or_default() += 1;
+            *self
+                .units
+                .lock()
+                .unwrap()
+                .entry(name.to_owned())
+                .or_default() += by;
+        }
+        fn set_gauge(&self, _: &str, _: f64) {}
+        fn observe_histogram(&self, _: &str, _: f64) {}
+    }
+
+    #[test]
+    fn sampler_metrics_emit_in_batches() {
+        let sink = Arc::new(CountingSink::default());
+        let s = UpdateSampler::new(0).with_metrics_sink(Arc::clone(&sink) as Arc<dyn MetricsSink>);
+        // 200 ops, batch = 64 → expect 3 batched emissions
+        // (at counts 64, 128, 192). Residue 8 stays in
+        // accepted_total but not in sink until flush_metrics.
+        for _ in 0..200 {
+            assert!(s.accept_stride());
+        }
+        let calls = sink.calls.lock().unwrap();
+        let units = sink.units.lock().unwrap();
+        assert_eq!(
+            *calls.get(names::HOT_PATH_SAMPLER_ACCEPTED_TOTAL).unwrap(),
+            3,
+            "expected 3 batched emissions, got {calls:?}"
+        );
+        assert_eq!(
+            *units.get(names::HOT_PATH_SAMPLER_ACCEPTED_TOTAL).unwrap(),
+            192
+        );
+        assert_eq!(s.accepted_total(), 200, "in-process counter must be exact");
+        drop(calls);
+        drop(units);
+        // Flush drains the residue.
+        s.flush_metrics();
+        let units = sink.units.lock().unwrap();
+        assert_eq!(
+            *units.get(names::HOT_PATH_SAMPLER_ACCEPTED_TOTAL).unwrap(),
+            200,
+            "flush_metrics must drain the residue"
+        );
+    }
+
+    #[test]
+    fn producer_metrics_emit_in_batches_and_flush_drains() {
+        let sink = Arc::new(CountingSink::default());
+        let (p, _c) =
+            update_channel_with_sink::<2>(1024, Arc::clone(&sink) as Arc<dyn MetricsSink>);
+        for _ in 0..130_u32 {
+            assert!(p.try_enqueue([0.0, 0.0]));
+        }
+        let units_pre = sink
+            .units
+            .lock()
+            .unwrap()
+            .get(names::HOT_PATH_QUEUE_ENQUEUED_TOTAL)
+            .copied()
+            .unwrap_or(0);
+        // 130 ops → 2 batched emissions (64, 128) → 128 units.
+        assert_eq!(units_pre, 128);
+        assert_eq!(p.enqueued_total(), 130);
+        p.flush_metrics();
+        let units_post = sink
+            .units
+            .lock()
+            .unwrap()
+            .get(names::HOT_PATH_QUEUE_ENQUEUED_TOTAL)
+            .copied()
+            .unwrap_or(0);
+        assert_eq!(units_post, 130);
+        // Idempotent flush.
+        p.flush_metrics();
+        let units_again = sink
+            .units
+            .lock()
+            .unwrap()
+            .get(names::HOT_PATH_QUEUE_ENQUEUED_TOTAL)
+            .copied()
+            .unwrap_or(0);
+        assert_eq!(units_again, 130);
+    }
+
+    #[test]
+    fn prefix_cap_metrics_emit_in_batches() {
+        let sink = Arc::new(CountingSink::default());
+        let cap = PrefixRateCap::new(nz_u32(1_000), nz_u64(60_000))
+            .with_metrics_sink(Arc::clone(&sink) as Arc<dyn MetricsSink>);
+        for i in 0..200_u64 {
+            assert!(cap.check_and_record(i, 0));
+        }
+        let units = sink
+            .units
+            .lock()
+            .unwrap()
+            .get(names::HOT_PATH_PREFIX_ADMITTED_TOTAL)
+            .copied()
+            .unwrap_or(0);
+        assert_eq!(units, 192, "200 ops, batch 64 → 192 units pre-flush");
+        cap.flush_metrics();
+        let units_post = sink
+            .units
+            .lock()
+            .unwrap()
+            .get(names::HOT_PATH_PREFIX_ADMITTED_TOTAL)
+            .copied()
+            .unwrap_or(0);
+        assert_eq!(units_post, 200);
+    }
+
     #[test]
     fn keyed_sampler_admission_differs_from_unkeyed() {
         // The unkeyed sampler admits h == 0 mod 4.
@@ -818,9 +1254,17 @@ mod tests {
         assert_eq!(d2, d3);
     }
 
+    fn nz_u32(n: u32) -> NonZeroU32 {
+        NonZeroU32::new(n).expect("non-zero")
+    }
+
+    fn nz_u64(n: u64) -> NonZeroU64 {
+        NonZeroU64::new(n).expect("non-zero")
+    }
+
     #[test]
     fn prefix_rate_cap_allows_up_to_cap() {
-        let cap = PrefixRateCap::new(3, 1_000);
+        let cap = PrefixRateCap::new(nz_u32(3), nz_u64(1_000));
         let prefix = 0x1234_5678_u64;
         let now = 1_000_u64;
         assert!(cap.check_and_record(prefix, now));
@@ -833,8 +1277,8 @@ mod tests {
     }
 
     #[test]
-    fn prefix_rate_cap_zero_disables_gate() {
-        let cap = PrefixRateCap::new(0, 1_000);
+    fn prefix_rate_cap_disabled_admits_all() {
+        let cap = PrefixRateCap::disabled(nz_u64(1_000));
         for i in 0..100_u64 {
             assert!(cap.check_and_record(i, 0));
         }
@@ -844,7 +1288,7 @@ mod tests {
 
     #[test]
     fn prefix_rate_cap_resets_on_window_roll() {
-        let cap = PrefixRateCap::new(2, 1_000);
+        let cap = PrefixRateCap::new(nz_u32(2), nz_u64(1_000));
         let prefix = 0xabcd_u64;
         // Fill the cap inside one window.
         assert!(cap.check_and_record(prefix, 100));
@@ -865,7 +1309,7 @@ mod tests {
         // under concurrent reset races.
         use std::sync::Arc;
         use std::thread;
-        let cap = Arc::new(PrefixRateCap::new(4, 100));
+        let cap = Arc::new(PrefixRateCap::new(nz_u32(4), nz_u64(100)));
         let threads: Vec<_> = (0..8_u64)
             .map(|t| {
                 let cap = Arc::clone(&cap);
