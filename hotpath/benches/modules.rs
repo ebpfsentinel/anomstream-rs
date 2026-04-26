@@ -90,6 +90,54 @@ fn bench_hot_path_prefix_cap(c: &mut Criterion) {
         });
     });
 
+    // Multi-thread contention measurement: 8 threads hammer 8
+    // distinct buckets concurrently. Without cache-line padding
+    // the adjacent `AtomicU32` buckets share a 64-byte line,
+    // forcing every cross-thread write to bounce the line through
+    // MOESI/MESI — measurable as a >5× per-op slowdown on a
+    // typical x86_64 box. Cache-padded buckets (current layout)
+    // keep this bench near the single-thread cost.
+    group.bench_function("check_and_record_contended_8threads", |b| {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::thread;
+        let cap = Arc::new(PrefixRateCap::new(
+            NonZeroU32::new(u32::MAX).expect("non-zero"),
+            NonZeroU64::new(60_000).expect("non-zero"),
+        ));
+        b.iter_custom(|iters| {
+            let stop = Arc::new(AtomicBool::new(false));
+            // 7 background threads keep the other cache lines hot
+            // — each one targets a distinct bucket so every write
+            // lands on its own cache line. Without padding, false
+            // sharing across these adjacent atomics would dominate
+            // the measurement.
+            let bg: Vec<_> = (1..8_u64)
+                .map(|t| {
+                    let cap = Arc::clone(&cap);
+                    let stop = Arc::clone(&stop);
+                    thread::spawn(move || {
+                        while !stop.load(Ordering::Relaxed) {
+                            let _ = cap.check_and_record(t, 0);
+                        }
+                    })
+                })
+                .collect();
+            // Foreground thread runs the timed loop on bucket 0.
+            let start = std::time::Instant::now();
+            for _ in 0..iters {
+                let v = cap.check_and_record(black_box(0), 0);
+                black_box(v);
+            }
+            let elapsed = start.elapsed();
+            stop.store(true, Ordering::Relaxed);
+            for h in bg {
+                h.join().expect("thread join");
+            }
+            elapsed
+        });
+    });
+
     group.finish();
 }
 

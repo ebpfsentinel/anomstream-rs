@@ -249,15 +249,42 @@ impl UpdateSampler {
         getrandom::fill(&mut buf)?;
         let mix_k1 = u64::from_le_bytes(buf[0..8].try_into().expect("16 bytes"));
         let mix_k2 = u64::from_le_bytes(buf[8..16].try_into().expect("16 bytes"));
-        // `| 1` alone forces odd + non-zero so `mix_k1` is always
-        // a valid multiplicative-bijection modulus. `getrandom`
-        // returning exactly zero has probability `2⁻⁶⁴`; in that
-        // vanishingly-rare case the result becomes `1`, which is
-        // still a valid odd multiplier and — critically — not a
-        // publicly-known constant the old fallback path would
-        // have degraded to.
-        let mix_k1 = mix_k1 | 1;
-        Ok(Self {
+        Ok(Self::new_keyed_with_seeds(keep_every_n, mix_k1, mix_k2))
+    }
+
+    /// Caller-supplied-seed variant of [`Self::new_keyed`] — for
+    /// restricted environments where `getrandom` is unavailable
+    /// (early-boot embedded, chroot without `/dev/urandom`,
+    /// `wasm32-unknown-unknown` without a JS host) **or** for
+    /// reproducible / snapshot-replayable test fixtures.
+    ///
+    /// `k1` is forced odd via `| 1` so it remains a valid
+    /// multiplicative-bijection modulus inside [`Self::keyed_mix`];
+    /// `k2` is XOR'd at the end of the mix unchanged. Passing
+    /// `(0, 0)` would degrade `mix_k1` to `1` and `mix_k2` to `0` —
+    /// still keyed (the murmur finaliser still runs) but with a
+    /// publicly-known seed, so the per-sampler-secret defence
+    /// against `AML.T0020` poisoning sprays goes away. **Do not**
+    /// use the all-zero seed in production; in that case prefer
+    /// [`Self::new`] which advertises its deterministic admission
+    /// behaviour explicitly.
+    ///
+    /// # Production seed sourcing
+    ///
+    /// When `getrandom` is unavailable, derive `k1` / `k2` from a
+    /// local entropy source the deployment trusts: a
+    /// configuration-file secret backed by a KMS, an HSM-derived
+    /// session key, or boot-time RDRAND. Anything is acceptable as
+    /// long as the attacker who can probe the admission decision
+    /// cannot recover the seed.
+    #[must_use]
+    pub fn new_keyed_with_seeds(keep_every_n: u32, k1: u64, k2: u64) -> Self {
+        // `| 1` forces odd + non-zero so `mix_k1` is always a
+        // valid multiplicative-bijection modulus. A caller-passed
+        // even `k1` (or `0`) silently rounds up to the next odd
+        // value rather than degenerating the keyed mix.
+        let mix_k1 = k1 | 1;
+        Self {
             keep_every_n,
             counter: AtomicU64::new(0),
             accepted: AtomicU64::new(0),
@@ -265,9 +292,9 @@ impl UpdateSampler {
             accepted_flushed: AtomicU64::new(0),
             rejected_flushed: AtomicU64::new(0),
             mix_k1,
-            mix_k2,
+            mix_k2: k2,
             metrics: default_sink(),
-        })
+        }
     }
 
     /// Install a metrics sink — every `accept_*` call emits an
@@ -681,6 +708,22 @@ pub fn try_update_channel_with_sink<const D: usize>(
     ))
 }
 
+/// Cache-line-padded `AtomicU32` — each bucket lives on its own
+/// 64-byte cache line so concurrent `fetch_add`s on different
+/// buckets do not bounce a shared line through the coherence
+/// protocol. Footprint trade: 256 buckets × 64 B = 16 KiB
+/// (vs 1 KiB unpadded). Worth it on the hot path where false
+/// sharing measurably tanks multi-core throughput; the bench
+/// `hot_path_prefix_cap/check_and_record_contended_8threads`
+/// quantifies the gain.
+#[repr(C, align(64))]
+#[derive(Debug)]
+struct PaddedBucket {
+    /// Live counter. Surrounded by `align(64)` so adjacent
+    /// buckets land on distinct cache lines.
+    inner: AtomicU32,
+}
+
 /// Fixed-bucket per-prefix rate cap — bounds how many admissions a
 /// single source prefix can push into the reservoir within a
 /// rolling time window. Defends against the reservoir-poisoning
@@ -728,10 +771,9 @@ pub fn try_update_channel_with_sink<const D: usize>(
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct PrefixRateCap {
-    /// Per-bucket admit counter. 256 buckets keep the struct at
-    /// 1 KiB and give tolerable collision rates for typical
-    /// /24-prefix spreads.
-    buckets: [AtomicU32; Self::BUCKETS],
+    /// Per-bucket admit counter, cache-line padded to defeat
+    /// false sharing. 256 buckets × 64 B = 16 KiB total.
+    buckets: [PaddedBucket; Self::BUCKETS],
     /// Epoch-millisecond timestamp at which the current window
     /// opened. The next `check_and_record` past `+ window_ms`
     /// atomically resets the buckets.
@@ -757,7 +799,7 @@ pub struct PrefixRateCap {
 
 impl PrefixRateCap {
     /// Number of buckets. Compile-time constant; 256 buckets ×
-    /// `AtomicU32` = 1 KiB on 64-bit.
+    /// 64 B (cache-padded `AtomicU32`) = 16 KiB on 64-bit.
     pub const BUCKETS: usize = 256;
 
     /// Build a rate cap. Both arguments are typed `NonZero` so
@@ -782,9 +824,11 @@ impl PrefixRateCap {
     /// Shared constructor — bypassed by [`Self::new`] /
     /// [`Self::disabled`] which guarantee the typed invariants.
     fn build(cap_per_window: u32, window_ms: u64) -> Self {
-        // Cannot use `[AtomicU32::new(0); 256]` because AtomicU32
-        // is !Copy. Build via closure.
-        let buckets: [AtomicU32; Self::BUCKETS] = core::array::from_fn(|_| AtomicU32::new(0));
+        // Cannot use `[PaddedBucket { ... }; 256]` because the
+        // inner AtomicU32 is !Copy. Build via closure.
+        let buckets: [PaddedBucket; Self::BUCKETS] = core::array::from_fn(|_| PaddedBucket {
+            inner: AtomicU32::new(0),
+        });
         Self {
             buckets,
             window_start_ms: AtomicU64::new(0),
@@ -861,14 +905,14 @@ impl PrefixRateCap {
                 // `fetch_add` acquires the updated
                 // `window_start_ms`.
                 for bucket in &self.buckets {
-                    bucket.store(0, Ordering::Relaxed);
+                    bucket.inner.store(0, Ordering::Relaxed);
                 }
                 break;
             }
         }
         #[allow(clippy::cast_possible_truncation)]
         let idx = ((prefix_hash & 0xff) as usize) & (Self::BUCKETS - 1);
-        let prior = self.buckets[idx].fetch_add(1, Ordering::Relaxed);
+        let prior = self.buckets[idx].inner.fetch_add(1, Ordering::Relaxed);
         if prior < self.cap_per_window {
             record_batched(
                 &self.admitted_total,
@@ -881,7 +925,7 @@ impl PrefixRateCap {
             // Already over — roll back the increment so a late
             // window roll doesn't accumulate forever on this
             // bucket.
-            self.buckets[idx].fetch_sub(1, Ordering::Relaxed);
+            self.buckets[idx].inner.fetch_sub(1, Ordering::Relaxed);
             record_batched(
                 &self.capped_total,
                 &self.capped_flushed,
@@ -1242,6 +1286,52 @@ mod tests {
     }
 
     #[test]
+    fn new_keyed_with_seeds_reproducible() {
+        // Same explicit seeds → same admission decisions across
+        // independently-built samplers. Required for snapshot /
+        // replay test fixtures and for restricted environments
+        // that cannot call getrandom.
+        let s1 = UpdateSampler::new_keyed_with_seeds(4, 0xdead_beef, 0xcafe_f00d);
+        let s2 = UpdateSampler::new_keyed_with_seeds(4, 0xdead_beef, 0xcafe_f00d);
+        for h in 0..32_u64 {
+            assert_eq!(s1.accept_hash(h), s2.accept_hash(h));
+        }
+        assert!(s1.is_keyed());
+    }
+
+    #[test]
+    fn new_keyed_with_seeds_different_seeds_diverge() {
+        // Distinct seed pairs must produce distinct admission
+        // residue classes — the whole point of per-sampler
+        // rotation against AML.T0020.
+        let s_a = UpdateSampler::new_keyed_with_seeds(4, 0x1111, 0x2222);
+        let s_b = UpdateSampler::new_keyed_with_seeds(4, 0x3333, 0x4444);
+        let same = (0..32_u64)
+            .filter(|h| s_a.accept_hash(*h) == s_b.accept_hash(*h))
+            .count();
+        // 32 hashes, 50% match probability per hash under random
+        // mixes → P(all match) = 2⁻³² ≈ 2e-10. Test that flakes
+        // would be observable across the universe's lifetime.
+        assert!(
+            same < 32,
+            "two distinct seed pairs produced identical admission for all 32 probes"
+        );
+    }
+
+    #[test]
+    fn new_keyed_with_seeds_forces_odd_k1() {
+        // Even k1 (including zero) must round up to odd so the
+        // murmur mix stays valid. Two samplers built with
+        // `(k1=0, k2=X)` and `(k1=1, k2=X)` therefore agree on
+        // every hash because both effectively use `mix_k1 = 1`.
+        let s_zero = UpdateSampler::new_keyed_with_seeds(4, 0, 0);
+        let s_one = UpdateSampler::new_keyed_with_seeds(4, 1, 0);
+        for h in 0..16_u64 {
+            assert_eq!(s_zero.accept_hash(h), s_one.accept_hash(h));
+        }
+    }
+
+    #[test]
     fn keyed_sampler_is_deterministic_within_sampler() {
         // Same flow hash must decide the same way every call on
         // the same sampler — baseline coverage per flow.
@@ -1297,6 +1387,56 @@ mod tests {
         // Advance past the window — next call resets and admits.
         assert!(cap.check_and_record(prefix, 1_500));
         assert_eq!(cap.admitted_total(), 3);
+    }
+
+    #[test]
+    fn prefix_cap_buckets_are_cache_line_padded() {
+        // Compile-time invariant: each PaddedBucket is exactly
+        // one 64-byte cache line. If this regresses (e.g. a new
+        // field added without re-aligning), the bench
+        // `check_and_record_contended_8threads` will surface the
+        // false-sharing penalty before the bug ships.
+        assert_eq!(core::mem::size_of::<PaddedBucket>(), 64);
+        assert_eq!(core::mem::align_of::<PaddedBucket>(), 64);
+        assert_eq!(
+            core::mem::size_of::<[PaddedBucket; PrefixRateCap::BUCKETS]>(),
+            16 * 1024,
+            "bucket bank must be 16 KiB (256 × 64 B cache-line-padded)"
+        );
+    }
+
+    #[test]
+    fn prefix_cap_distinct_buckets_concurrent_throughput() {
+        // 8 threads hammer 8 distinct buckets so every write
+        // lands on a different cache line; with cache-line padding
+        // the test exercises the lock-free path with zero false
+        // sharing. The point is correctness (admission counters
+        // line up) not throughput — the bench
+        // `check_and_record_contended_8threads` measures the
+        // perf side.
+        use std::sync::Arc;
+        use std::thread;
+        let cap = Arc::new(PrefixRateCap::new(nz_u32(1_000_000), nz_u64(60_000)));
+        let n_threads = 8_u64;
+        let n_per_thread = 50_000_u64;
+        let handles: Vec<_> = (0..n_threads)
+            .map(|t| {
+                let cap = Arc::clone(&cap);
+                thread::spawn(move || {
+                    // Each thread targets one distinct bucket via
+                    // a stride that lands on (t & 0xff).
+                    let prefix = u64::from(u8::try_from(t).unwrap());
+                    for _ in 0..n_per_thread {
+                        assert!(cap.check_and_record(prefix, 0));
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(cap.admitted_total(), n_threads * n_per_thread);
+        assert_eq!(cap.capped_total(), 0);
     }
 
     #[test]
