@@ -28,7 +28,7 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -38,7 +38,7 @@ jobs:
     name: clippy (workspace)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -50,7 +50,7 @@ jobs:
     name: no_std build (core, triage)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check -p anomstream-core --no-default-features
@@ -75,7 +75,7 @@ jobs:
           - "core,parallel,postcard,serde_json"
           - "full"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check -p anomstream --no-default-features --features "${{ matrix.features }}"
@@ -89,12 +89,8 @@ jobs:
         rust: [stable, "1.95"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      # Pin exact action tag (not `@master`) so a compromised
-      # upstream push cannot silently swap the toolchain download
-      # underneath CI. `@1.12.0` was the latest at lockdown;
-      # bumps are deliberate.
-      - uses: dtolnay/rust-toolchain@1.12.0
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
       - uses: Swatinem/rust-cache@v2
@@ -105,7 +101,7 @@ jobs:
     name: minimal-versions (nightly -Zminimal-versions)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
       # Resolve every dependency to the oldest version its
@@ -116,7 +112,7 @@ jobs:
       # afterwards to confirm the minimal set compiles cleanly.
       - run: cargo +nightly update -Z minimal-versions
       - run: cargo check --workspace --all-features
-      - run: cargo update   # restore the normal lockfile.
+      - run: cargo update # restore the normal lockfile.
 
   doc:
     name: cargo doc (workspace)
@@ -128,7 +124,7 @@ jobs:
       # cleanly.
       RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --all-features --no-deps
@@ -137,7 +133,7 @@ jobs:
     name: cargo bench --no-run (workspace)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo bench --workspace --no-run
@@ -146,7 +142,7 @@ jobs:
     name: cargo build --examples (workspace)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --examples --all-features
@@ -155,7 +151,7 @@ jobs:
     name: cargo publish --dry-run (anomstream-core)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Only core can dry-run before first publication — triage /
@@ -170,7 +166,7 @@ jobs:
     name: cargo audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -179,7 +175,7 @@ jobs:
     name: cargo deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
@@ -189,19 +185,19 @@ jobs:
     name: cargo machete (unused deps)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: bnjbvr/cargo-machete@main
+      - uses: actions/checkout@v6
+      - uses: bnjbvr/cargo-machete@v0.9.2
 
   sbom:
     name: CycloneDX SBOM (workspace)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install --locked cargo-cyclonedx
       - run: cargo cyclonedx --format json --all-features
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sbom-cyclonedx
           path: "**/*.cdx.json"
