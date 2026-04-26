@@ -1,26 +1,38 @@
 name: Release
 
-# Fires automatically on `v*` tag push (e.g. `v1.0.0`, `v1.0.0-rc.1`),
-# or manually via `workflow_dispatch`. Enforces the release gates
-# every tag must pass before `cargo publish` is allowed:
+# Fires automatically on `v*` tag push (e.g. `v2026.4.1`), or manually
+# via `workflow_dispatch` (with optional `force_version` input).
 #
-# 1. Workspace version is not the `0.0.0-dev` development sentinel.
-# 2. Tag name matches `Cargo.toml` workspace.package.version.
-# 3. Full `fmt` + `clippy -D warnings` + workspace tests.
-# 4. `cargo audit` clean + `cargo deny check` clean.
-# 5. `cargo publish --dry-run` succeeds for every publishable
-#    member in dependency order (`core → triage → hotpath →
-#    anomstream`).
+# Version logic mirrors ebpfsentinel (calendar versioning YYYY.M.X):
+#   - tag push  → version = tag without the `v` prefix
+#   - dispatch  → version = `force_version` if given, else auto-bump
+#                 patch from latest `vYYYY.M.*` tag for current month
 #
-# The actual `cargo publish` still has to be run manually by a
-# maintainer with `CARGO_REGISTRY_TOKEN` in scope — this workflow
-# gates the *readiness* of a tag, not the publication itself.
+# The resolved version is stamped (in-tree, not committed) into:
+#   - every workspace Cargo.toml (workspace.package.version + path-dep
+#     version specs that currently read `0.0.0-dev`)
+#   - README.md (`cargo add` snippets)
+#
+# Then the release gate runs:
+#   1. Full `fmt` + `clippy -D warnings` + workspace tests.
+#   2. `cargo audit` clean + `cargo deny check` clean.
+#   3. `cargo publish --dry-run` for every publishable member in
+#      dependency order (`core → triage → hotpath → anomstream`).
+#
+# Actual `cargo publish` is still triggered manually by a maintainer
+# with `CARGO_REGISTRY_TOKEN` in scope — this workflow gates the
+# *readiness* of a tag, not the publication itself.
 
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      force_version:
+        description: "Force a specific version (optional, format: YYYY.M.X)"
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,42 +40,59 @@ env:
   RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links
 
 jobs:
-  validate-version:
-    name: validate workspace version
+  prepare:
+    name: Prepare
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
-      version: ${{ steps.extract.outputs.version }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v6
-      - id: extract
-        name: extract workspace.package.version
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        env:
+          FORCE_VERSION: ${{ github.event.inputs.force_version }}
         run: |
-          VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)".*/\1/')
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "::notice::Workspace version is $VERSION"
-      - name: reject 0.0.0-dev sentinel
-        run: |
-          VERSION="${{ steps.extract.outputs.version }}"
-          if [[ "$VERSION" == "0.0.0-dev" ]]; then
-            echo "::error::Refusing to release with development sentinel version 0.0.0-dev; bump workspace.package.version before tagging."
-            exit 1
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          elif [ -n "$FORCE_VERSION" ]; then
+            VERSION="$FORCE_VERSION"
+          else
+            git fetch --tags
+            YEAR=$(date +'%Y')
+            MONTH=$(date +'%-m')
+            LATEST_TAG=$(git tag -l "v${YEAR}.${MONTH}.*" | sort -V | tail -n 1)
+            if [ -z "$LATEST_TAG" ]; then
+              VERSION="${YEAR}.${MONTH}.1"
+            else
+              PATCH=$(echo "$LATEST_TAG" | sed "s/^v${YEAR}\.${MONTH}\.\([0-9]*\).*/\1/")
+              VERSION="${YEAR}.${MONTH}.$((PATCH + 1))"
+            fi
           fi
-      - name: match tag to version (skipped on workflow_dispatch)
-        if: github.event_name == 'push'
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          EXPECTED="v${{ steps.extract.outputs.version }}"
-          if [[ "$TAG" != "$EXPECTED" ]]; then
-            echo "::error::Git tag $TAG does not match workspace version $EXPECTED"
+
+          if ! echo "$VERSION" | grep -qE '^[0-9]{4}\.[1-9][0-9]?\.[0-9]+$'; then
+            echo "::error::Invalid version format: $VERSION (expected YYYY.M.X)"
             exit 1
           fi
 
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Resolved version: ${VERSION}"
+
   gate:
     name: full release gate
-    needs: validate-version
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/stamp-version
+        with:
+          version: ${{ needs.prepare.outputs.version }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -77,10 +106,13 @@ jobs:
 
   audit:
     name: cargo audit + deny
-    needs: validate-version
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/stamp-version
+        with:
+          version: ${{ needs.prepare.outputs.version }}
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -91,17 +123,20 @@ jobs:
 
   publish-dry-run:
     name: publish chain --dry-run
-    needs: [validate-version, gate, audit]
+    needs: [prepare, gate, audit]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/stamp-version
+        with:
+          version: ${{ needs.prepare.outputs.version }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Dependency order matters — each member depends on the ones
       # above via a version requirement that must resolve against
       # crates.io (or the in-flight dry-run graph). `--allow-dirty`
-      # covers the un-committed Cargo.lock that can appear in
-      # CI workspaces.
+      # covers the un-committed Cargo.lock + stamped sources that
+      # appear in CI workspaces.
       - run: cargo publish --dry-run -p anomstream-core --allow-dirty
       - run: cargo publish --dry-run -p anomstream-triage --allow-dirty
       - run: cargo publish --dry-run -p anomstream-hotpath --allow-dirty
