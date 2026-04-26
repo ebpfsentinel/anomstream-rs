@@ -11,7 +11,7 @@
 //! Run with `cargo run --example group_scores`.
 
 use anomstream_core::{FeatureGroups, RcfError, ThresholdedForestBuilder};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn main() -> Result<(), RcfError> {

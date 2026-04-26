@@ -17,7 +17,7 @@
 use std::time::Instant;
 
 use anomstream_core::{EarlyTermConfig, ForestBuilder, RcfError};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn main() -> Result<(), RcfError> {

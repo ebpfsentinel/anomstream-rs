@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
 #[allow(unused_imports)]
 use num_traits::Float;
-use rand::{RngCore, SeedableRng};
+use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use crate::config::RcfConfig;
@@ -2066,7 +2066,7 @@ const _: fn() = || {
 mod tests {
     use super::*;
     use crate::config::ForestBuilder;
-    use rand::Rng;
+    use rand::RngExt;
 
     fn small_forest() -> RandomCutForest<2> {
         ForestBuilder::<2>::new()

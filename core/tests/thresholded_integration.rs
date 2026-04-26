@@ -15,7 +15,7 @@
 #![allow(clippy::cast_precision_loss)] // Tests cast small bounded counters.
 
 use anomstream_core::ThresholdedForestBuilder;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn noisy_point(rng: &mut ChaCha8Rng) -> [f64; 4] {

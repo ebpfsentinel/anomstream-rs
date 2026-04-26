@@ -6,7 +6,7 @@
 //! Run with `cargo run --example tenant_pool`.
 
 use anomstream_core::{RcfError, TenantForestPool, ThresholdedForestBuilder};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn main() -> Result<(), RcfError> {

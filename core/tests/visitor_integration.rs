@@ -49,8 +49,8 @@ fn uniform_dataset_yields_low_scores() {
     let mut points: Vec<[f64; 2]> = Vec::with_capacity(200);
     for _ in 0..200 {
         let p = [
-            <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng),
-            <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng),
+            <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng),
+            <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng),
         ];
         points.push(p);
     }
@@ -73,8 +73,8 @@ fn outlier_scores_above_cluster_mean() {
     let mut points: Vec<[f64; 2]> = Vec::with_capacity(200);
     for _ in 0..200 {
         let p = [
-            <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng) * 0.1 - 0.05,
-            <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng) * 0.1 - 0.05,
+            <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng) * 0.1 - 0.05,
+            <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng) * 0.1 - 0.05,
         ];
         points.push(p);
     }
@@ -103,7 +103,7 @@ fn single_dim_anomaly_attribution_argmax() {
     for _ in 0..200 {
         let mut p = [0.0_f64; DIM];
         for slot in &mut p {
-            *slot = <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng);
+            *slot = <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng);
         }
         points.push(p);
     }

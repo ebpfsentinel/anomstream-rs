@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 
 use anomstream_core::{RcfError, ThresholdedForest, ThresholdedForestBuilder};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn snapshot_path() -> PathBuf {

@@ -9,7 +9,7 @@ use anomstream_hotpath::{PrefixRateCap, UpdateSampler, update_channel};
 use core::num::{NonZeroU32, NonZeroU64};
 use criterion::{Criterion, criterion_group, criterion_main};
 use mimalloc::MiMalloc;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use std::hint::black_box;
 

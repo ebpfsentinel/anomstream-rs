@@ -14,7 +14,7 @@
 use anomstream_core::{
     AnomalyScore, ForestBuilder, Severity, SeverityBands, ThresholdedForestBuilder,
 };
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 #[test]

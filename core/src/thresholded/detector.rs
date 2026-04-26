@@ -707,7 +707,7 @@ mod tests {
 
     #[test]
     fn quantile_threshold_mode_fires_on_tail_spike() {
-        use rand::{Rng, SeedableRng};
+        use rand::{RngExt, SeedableRng};
         let mut d = ThresholdedForestBuilder::<2>::new()
             .num_trees(50)
             .sample_size(64)
@@ -746,7 +746,7 @@ mod tests {
 
     #[test]
     fn current_threshold_above_floor_when_stddev_positive() {
-        use rand::{Rng, SeedableRng};
+        use rand::{RngExt, SeedableRng};
         // Use a non-zero min_threshold and confirm the adaptive
         // threshold rises above it once stats converge.
         let mut d = ThresholdedForestBuilder::<2>::new()

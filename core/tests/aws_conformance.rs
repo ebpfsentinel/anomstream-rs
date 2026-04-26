@@ -211,8 +211,8 @@ fn aws_outlier_strictly_above_cluster_member() {
     let mut rng = ChaCha8Rng::seed_from_u64(99);
     for _ in 0..400 {
         let p = [
-            <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng) * 0.1,
-            <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng) * 0.1,
+            <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng) * 0.1,
+            <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng) * 0.1,
         ];
         forest.update(p).unwrap();
     }

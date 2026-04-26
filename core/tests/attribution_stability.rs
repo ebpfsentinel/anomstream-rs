@@ -20,7 +20,7 @@
 #![allow(clippy::cast_precision_loss, clippy::float_cmp)]
 
 use anomstream_core::{ForestBuilder, RcfError, TenantForestPool, ThresholdedForestBuilder};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn noisy4(rng: &mut ChaCha8Rng) -> [f64; 4] {

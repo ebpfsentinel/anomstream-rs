@@ -6,7 +6,7 @@
 //! Run with `cargo run --example retention`.
 
 use anomstream_core::{RcfError, ThresholdedForestBuilder};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn main() -> Result<(), RcfError> {

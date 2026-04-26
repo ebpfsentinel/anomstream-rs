@@ -17,7 +17,7 @@
 #![allow(clippy::cast_precision_loss)] // Bounded-counter casts in test setup.
 
 use anomstream_core::{RcfError, TenantForestPool, ThresholdedForest, ThresholdedForestBuilder};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn build_factory() -> impl Fn() -> anomstream_core::RcfResult<ThresholdedForest<4>> {

@@ -16,7 +16,7 @@ use anomstream_core::{
     CusumConfig, MetaDriftDetector, RcfError, ScoreHistogram, ThresholdedForestBuilder,
     metrics::{TestSink, names},
 };
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn main() -> Result<(), RcfError> {

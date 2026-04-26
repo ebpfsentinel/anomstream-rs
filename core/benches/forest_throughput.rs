@@ -44,7 +44,7 @@ fn build_warm_forest<const D: usize>(
     for _ in 0..(sample_size * 4) {
         let mut p = [0.0_f64; D];
         for slot in &mut p {
-            *slot = <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng);
+            *slot = <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng);
         }
         forest.update(p).expect("update succeeds");
     }
@@ -63,7 +63,7 @@ fn bench_update_for<const D: usize>(
         b.iter(|| {
             let mut p = [0.0_f64; D];
             for slot in &mut p {
-                *slot = <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng);
+                *slot = <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng);
             }
             forest.update(black_box(p)).expect("update succeeds");
         });
@@ -82,7 +82,7 @@ fn bench_score_for<const D: usize>(
         b.iter(|| {
             let mut p = [0.0_f64; D];
             for slot in &mut p {
-                *slot = <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng);
+                *slot = <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng);
             }
             let s = forest.score(black_box(&p)).expect("score succeeds");
             black_box(s);
@@ -106,7 +106,7 @@ fn bench_score_trimmed_for<const D: usize>(
         b.iter(|| {
             let mut p = [0.0_f64; D];
             for slot in &mut p {
-                *slot = <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng);
+                *slot = <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng);
             }
             let s = forest
                 .score_trimmed(black_box(&p), 0.1)
@@ -128,7 +128,7 @@ fn bench_attribution_for<const D: usize>(
         b.iter(|| {
             let mut p = [0.0_f64; D];
             for slot in &mut p {
-                *slot = <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng);
+                *slot = <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng);
             }
             let di = forest
                 .attribution(black_box(&p))
@@ -185,7 +185,7 @@ fn bench_score_and_attribution_for<const D: usize>(
         b.iter(|| {
             let mut p = [0.0_f64; D];
             for slot in &mut p {
-                *slot = <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng);
+                *slot = <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng);
             }
             let out = forest
                 .score_and_attribution(black_box(&p))
@@ -207,7 +207,7 @@ fn bench_split_score_then_attribution_for<const D: usize>(
         b.iter(|| {
             let mut p = [0.0_f64; D];
             for slot in &mut p {
-                *slot = <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng);
+                *slot = <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng);
             }
             let s = forest.score(black_box(&p)).expect("score succeeds");
             let di = forest
@@ -240,7 +240,7 @@ fn bench_codisp_many_for<const D: usize>(
             .map(|_| {
                 let mut p = [0.0_f64; D];
                 for slot in &mut p {
-                    *slot = <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng);
+                    *slot = <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng);
                 }
                 p
             })
@@ -268,7 +268,7 @@ fn bench_codisp_loop_for<const D: usize>(
             .map(|_| {
                 let mut p = [0.0_f64; D];
                 for slot in &mut p {
-                    *slot = <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng);
+                    *slot = <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng);
                 }
                 p
             })

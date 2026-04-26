@@ -5,7 +5,7 @@
 //! Run with `cargo run --example forensic`.
 
 use anomstream_core::{RcfError, ThresholdedForestBuilder};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn main() -> Result<(), RcfError> {

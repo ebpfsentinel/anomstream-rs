@@ -15,7 +15,7 @@
 use anomstream_core::{
     FeatureGroups, ForestBuilder, RcfError, TenantForestPool, ThresholdedForestBuilder,
 };
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn noisy(rng: &mut ChaCha8Rng) -> [f64; 4] {

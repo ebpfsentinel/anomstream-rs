@@ -16,7 +16,7 @@
 use anomstream_core::{
     CusumConfig, DriftKind, MetaDriftDetector, RcfError, ThresholdedForestBuilder,
 };
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn tight(rng: &mut ChaCha8Rng) -> [f64; 4] {

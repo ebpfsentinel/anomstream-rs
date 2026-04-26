@@ -6,7 +6,7 @@
 //! Run with `cargo run --example severity`.
 
 use anomstream_core::{RcfError, Severity, SeverityBands, ThresholdedForestBuilder};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn main() -> Result<(), RcfError> {

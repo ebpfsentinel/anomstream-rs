@@ -130,7 +130,7 @@ fn forest_save_over_existing_snapshot_replaces_it() {
 
 #[test]
 fn thresholded_path_roundtrip_preserves_grade() {
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
     use rand_chacha::ChaCha8Rng;
 
     let path = unique_tmp_path("trcf-rt");
@@ -177,7 +177,7 @@ fn thresholded_path_roundtrip_preserves_grade() {
 
 #[test]
 fn thresholded_resume_training_after_reload() {
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
     use rand_chacha::ChaCha8Rng;
 
     let path = unique_tmp_path("trcf-resume");

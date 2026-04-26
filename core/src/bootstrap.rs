@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn thresholded_bootstrap_makes_detector_ready() {
-        use rand::{Rng, SeedableRng};
+        use rand::{RngExt, SeedableRng};
         use rand_chacha::ChaCha8Rng;
 
         let mut d = ThresholdedForestBuilder::<4>::new()
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn thresholded_bootstrap_detects_outlier_immediately() {
-        use rand::{Rng, SeedableRng};
+        use rand::{RngExt, SeedableRng};
         use rand_chacha::ChaCha8Rng;
 
         let mut d = ThresholdedForestBuilder::<4>::new()

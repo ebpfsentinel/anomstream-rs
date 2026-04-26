@@ -29,7 +29,7 @@
 //! break detection accuracy.
 
 use anomstream_core::ForestBuilder;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 /// Compute the area under the ROC curve via trapezoidal rule on

@@ -18,7 +18,7 @@
 #![allow(clippy::cast_precision_loss, clippy::float_cmp)]
 
 use anomstream_core::{ForestBuilder, TenantForestPool, ThresholdedForestBuilder};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 #[test]

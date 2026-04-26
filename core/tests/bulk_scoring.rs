@@ -18,7 +18,7 @@
 use anomstream_core::{
     EarlyTermConfig, ForestBuilder, RcfError, TenantForestPool, ThresholdedForestBuilder,
 };
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn trained() -> anomstream_core::RandomCutForest<4> {

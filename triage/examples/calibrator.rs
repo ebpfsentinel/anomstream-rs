@@ -7,7 +7,7 @@
 
 use anomstream_core::{ForestBuilder, RcfError};
 use anomstream_triage::{PlattCalibrator, PlattFitConfig};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn main() -> Result<(), RcfError> {

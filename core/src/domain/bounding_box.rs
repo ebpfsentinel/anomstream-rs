@@ -321,7 +321,7 @@ impl<const D: usize> BoundingBox<D> {
     /// Returns [`RcfError::EmptyBoundingBox`] when every per-dim
     /// range of the augmented box is zero.
     #[inline]
-    pub fn augmented_random_cut<R: rand::RngCore + ?Sized>(
+    pub fn augmented_random_cut<R: rand::Rng + ?Sized>(
         &self,
         point: &[f64],
         rng: &mut R,
@@ -330,7 +330,7 @@ impl<const D: usize> BoundingBox<D> {
         if total <= 0.0 {
             return Err(RcfError::EmptyBoundingBox);
         }
-        let mut target = rand::Rng::random::<f64>(rng) * total;
+        let mut target = rand::RngExt::random::<f64>(rng) * total;
         let mut chosen = 0_usize;
         for d in 0..D {
             let r = self.augmented_range_at(d, point);
@@ -346,7 +346,7 @@ impl<const D: usize> BoundingBox<D> {
         let value = if (hi - lo).abs() < f64::EPSILON {
             lo
         } else {
-            lo + rand::Rng::random::<f64>(rng) * (hi - lo)
+            lo + rand::RngExt::random::<f64>(rng) * (hi - lo)
         };
         Ok(Cut::new(chosen, value))
     }

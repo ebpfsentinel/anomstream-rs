@@ -57,7 +57,7 @@ use core::cmp::Ordering;
 #[cfg(not(feature = "std"))]
 #[allow(unused_imports)]
 use num_traits::Float;
-use rand::{Rng, RngCore};
+use rand::{Rng, RngExt};
 
 use crate::error::{RcfError, RcfResult};
 
@@ -365,7 +365,7 @@ impl ReservoirSampler {
     /// Never. The post-capacity branch peeks the heap whose length is
     /// guaranteed to equal `self.capacity > 0` by the prior `if`, so
     /// the `expect`s on `peek`/`pop` are unreachable.
-    pub fn accept<R: RngCore + ?Sized>(&mut self, point_idx: usize, rng: &mut R) -> SamplerOp {
+    pub fn accept<R: Rng + ?Sized>(&mut self, point_idx: usize, rng: &mut R) -> SamplerOp {
         // Compute the warmup admission probability *before* bumping
         // `entries_seen` so the very first offer sees `p = 1/threshold`
         // (not `2/threshold`). The check itself always consumes the

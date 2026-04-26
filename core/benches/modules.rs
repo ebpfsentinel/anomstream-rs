@@ -23,7 +23,7 @@ use anomstream_core::{
 };
 use criterion::{Criterion, criterion_group, criterion_main};
 use mimalloc::MiMalloc;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use std::hint::black_box;
 

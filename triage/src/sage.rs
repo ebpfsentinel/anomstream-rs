@@ -52,7 +52,7 @@
 
 #![cfg(feature = "std")]
 
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use anomstream_core::error::{RcfError, RcfResult};

@@ -16,7 +16,7 @@
 #![allow(clippy::cast_precision_loss, clippy::float_cmp)] // Bit-exact postcard roundtrip asserts + bounded casts.
 
 use anomstream_core::{ForestBuilder, TenantForestPool, ThresholdedForestBuilder};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn noisy(rng: &mut ChaCha8Rng) -> [f64; 4] {

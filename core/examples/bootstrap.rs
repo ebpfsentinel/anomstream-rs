@@ -9,7 +9,7 @@
 //! Run with `cargo run --example bootstrap`.
 
 use anomstream_core::{RcfError, ThresholdedForestBuilder};
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 /// Stand-in for a TSDB adapter: produce `rows` historical 4-D

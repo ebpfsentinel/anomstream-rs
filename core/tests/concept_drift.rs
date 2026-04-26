@@ -32,8 +32,8 @@ fn distribution_shift_flagged_then_normalised() {
     // Phase 1: cluster A near the origin (uniform [-0.05, 0.05]).
     for _ in 0..PER_PHASE {
         let p = [
-            <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng) * 0.1 - 0.05,
-            <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng) * 0.1 - 0.05,
+            <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng) * 0.1 - 0.05,
+            <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng) * 0.1 - 0.05,
         ];
         forest.update(p).expect("update succeeds");
     }
@@ -47,8 +47,8 @@ fn distribution_shift_flagged_then_normalised() {
     // the reservoir refreshes (PER_PHASE > num_trees × sample_size).
     for _ in 0..PER_PHASE {
         let p = [
-            5.0 + <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng) * 0.1 - 0.05,
-            5.0 + <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng) * 0.1 - 0.05,
+            5.0 + <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng) * 0.1 - 0.05,
+            5.0 + <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng) * 0.1 - 0.05,
         ];
         forest.update(p).expect("update succeeds");
     }

@@ -11,7 +11,7 @@
 //! zero range) [`Cut::random_cut`] returns [`RcfError::EmptyBoundingBox`]
 //! — there is no meaningful cut.
 
-use rand::{Rng, RngCore};
+use rand::{Rng, RngExt};
 
 use crate::domain::bounding_box::BoundingBox;
 use crate::error::{RcfError, RcfResult};
@@ -90,7 +90,7 @@ impl Cut {
     /// let hi = bbox.max()[cut.dim()];
     /// assert!(cut.value() >= lo && cut.value() <= hi);
     /// ```
-    pub fn random_cut<const D: usize, R: RngCore + ?Sized>(
+    pub fn random_cut<const D: usize, R: Rng + ?Sized>(
         bbox: &BoundingBox<D>,
         rng: &mut R,
     ) -> RcfResult<Self> {

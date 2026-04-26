@@ -26,7 +26,7 @@ use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
 #[allow(unused_imports)]
 use num_traits::Float;
-use rand::RngCore;
+use rand::Rng;
 
 use crate::domain::{BoundingBox, Cut, ensure_dim, ensure_finite};
 use crate::error::{RcfError, RcfResult};
@@ -253,7 +253,7 @@ impl<const D: usize> RandomCutTree<D> {
         rng: &mut R,
     ) -> RcfResult<()>
     where
-        R: RngCore + ?Sized,
+        R: Rng + ?Sized,
         P: PointAccessor<D> + ?Sized,
     {
         ensure_dim(point, D)?;
@@ -292,7 +292,7 @@ impl<const D: usize> RandomCutTree<D> {
         rng: &mut R,
     ) -> RcfResult<NodeRef>
     where
-        R: RngCore + ?Sized,
+        R: Rng + ?Sized,
         P: PointAccessor<D> + ?Sized,
     {
         let n_bbox = self.bbox_of(n, points)?;
@@ -394,7 +394,7 @@ impl<const D: usize> RandomCutTree<D> {
         rng: &mut R,
     ) -> RcfResult<NodeRef>
     where
-        R: RngCore + ?Sized,
+        R: Rng + ?Sized,
         P: PointAccessor<D> + ?Sized,
     {
         let (existing_cut, left, right) = match self.store.view(n)? {
@@ -1133,7 +1133,7 @@ mod tests {
             for i in 0..N {
                 let mut p = [0.0_f64; D];
                 for slot in &mut p {
-                    *slot = <ChaCha8Rng as rand::Rng>::random::<f64>(&mut rng) * 100.0;
+                    *slot = <ChaCha8Rng as rand::RngExt>::random::<f64>(&mut rng) * 100.0;
                 }
                 points.push(p);
                 t.add(i, &p, &points, &mut rng).unwrap();

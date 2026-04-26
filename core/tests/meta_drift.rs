@@ -17,7 +17,7 @@
 use anomstream_core::{
     CusumConfig, DriftKind, MetaDriftDetector, ThresholdedForest, ThresholdedForestBuilder,
 };
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn build_detector() -> ThresholdedForest<4> {
