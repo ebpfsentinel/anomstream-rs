@@ -137,14 +137,32 @@ pub enum ClusterDecision {
 /// # Tenant-key choice
 ///
 /// The default `K = String` matches JSON-friendly SIEM sinks but
-/// pays a string-hash + heap allocation per tenant-set insert on
-/// the hot path. Deployments that already carry tenant identity
-/// as a numeric token should instantiate
-/// `AlertClusterer::<u64, D>` (or `u128`, or a tenant-ID
-/// newtype) to keep tenant-set updates branchless + heap-free.
-/// Both specialisations compile under the same feature set; the
-/// default is chosen for JSON ergonomics, not for absolute
-/// throughput.
+/// pays a string-hash + heap allocation **on every distinct-tenant
+/// insert** (the [`Self::observe`] Joined branch calls
+/// `rec.tenant.clone()` once per new tenant per cluster, capped
+/// by [`MAX_TENANTS_PER_CLUSTER`]). At MSSP scale (10 k+ alerts/s
+/// across many tenants) the per-clone heap traffic is measurable
+/// — typical workaround: instantiate `AlertClusterer::<u64, D>`
+/// (or `u128`, or a tenant-ID newtype) so the tenant rolodex is
+/// `Vec<Option<u64>>`, branchless to compare and `Copy` to
+/// insert. Both specialisations compile under the same feature
+/// set; the default is chosen for JSON ergonomics, not for
+/// absolute throughput.
+///
+/// ```ignore
+/// use anomstream_triage::AlertClusterer;
+/// // Default — convenient JSON tenant tokens, one heap clone per
+/// // distinct tenant joining each cluster.
+/// let _: AlertClusterer<String, 16> = AlertClusterer::new(0.95, 60_000).unwrap();
+/// // Throughput-tuned — numeric tenant IDs, no heap traffic on
+/// // the tenant-set update path.
+/// let _: AlertClusterer<u64, 16> = AlertClusterer::new(0.95, 60_000).unwrap();
+/// ```
+///
+/// Callers that need string-typed tenants but cannot afford the
+/// per-insert clone can wrap the tenant identity in
+/// `alloc::sync::Arc<str>` — `K = Arc<str>` clones are an atomic
+/// refcount bump, `O(1)` and allocation-free.
 pub struct AlertClusterer<K = String, const D: usize = 4>
 where
     K: Clone + PartialEq,

@@ -26,6 +26,29 @@
 //! `K · D` forest scores per estimator invocation. Default
 //! `K = 64` permutations at `D = 16` = 1 024 scores ≈ 40 ms on
 //! reference hardware — batch / SOC triage range, not hot-path.
+//!
+//! # Privacy / determinism
+//!
+//! [`SageEstimator::new`] takes a fixed RNG seed and
+//! [`SageEstimator::explain`] reseeds a fresh `ChaCha8Rng` from
+//! it on every call. Two consequences:
+//!
+//! - **Reproducible by design**: the same `(seed, baseline,
+//!   probe, forest snapshot)` always yields the same Shapley
+//!   estimate. Required for unit tests, regression-grade
+//!   forensics, and side-by-side audits.
+//! - **Predictable across runs**: an attacker who can probe the
+//!   estimator (e.g. by submitting their own traffic and reading
+//!   the resulting attribution) learns the same permutations a
+//!   second observer would see. The estimator is therefore **not
+//!   privacy-preserving** — it should not be used as a
+//!   differentially-private mechanism, and the per-permutation
+//!   Shapley estimates should not be treated as a noise channel.
+//!
+//! Callers that need per-invocation randomness (a fresh
+//! permutation set per probe so consecutive explanations cannot
+//! be cross-correlated) call [`SageEstimator::explain_with_seed`]
+//! and pass a CSPRNG-derived seed per call.
 
 #![cfg(feature = "std")]
 
@@ -138,8 +161,14 @@ impl<const D: usize> SageEstimator<D> {
     }
 
     /// Estimate the per-dim Shapley contribution for `probe`
-    /// against the forest. Runs `permutations` forest scores per
-    /// dim-inclusion event → `K · D` total scores per call.
+    /// against the forest using the estimator's stored seed.
+    /// Runs `permutations` forest scores per dim-inclusion event
+    /// → `K · D` total scores per call.
+    ///
+    /// Two calls with the same `(self, probe, forest snapshot)`
+    /// produce the same Shapley estimate — see the module-level
+    /// "Privacy / determinism" note. For per-call randomness,
+    /// use [`Self::explain_with_seed`].
     ///
     /// # Errors
     ///
@@ -150,6 +179,31 @@ impl<const D: usize> SageEstimator<D> {
         forest: &RandomCutForest<D>,
         probe: &[f64; D],
     ) -> RcfResult<SageExplanation<D>> {
+        self.explain_with_seed(forest, probe, self.seed)
+    }
+
+    /// Variant of [`Self::explain`] that draws permutations from
+    /// `seed` rather than the estimator's stored
+    /// [`Self::seed`]. Use to defeat cross-call permutation
+    /// predictability when downstream consumers can read the
+    /// per-permutation traces or correlate explanations across
+    /// requests — pass a CSPRNG-derived `u64` per call (e.g.
+    /// `getrandom::u64()`) and treat the explanation as a
+    /// fresh sample.
+    ///
+    /// Stored `Self::seed` is unchanged; the next [`Self::explain`]
+    /// call still uses it.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::explain`].
+    #[must_use = "detector output should be checked — dropping it silently usually indicates a logic bug"]
+    pub fn explain_with_seed(
+        &self,
+        forest: &RandomCutForest<D>,
+        probe: &[f64; D],
+        seed: u64,
+    ) -> RcfResult<SageExplanation<D>> {
         if !probe.iter().all(|v| v.is_finite()) {
             return Err(RcfError::NaNValue);
         }
@@ -157,7 +211,7 @@ impl<const D: usize> SageEstimator<D> {
         let baseline_score = f64::from(forest.score(&self.baseline)?);
         let probe_score = f64::from(forest.score(probe)?);
 
-        let mut rng = ChaCha8Rng::seed_from_u64(self.seed);
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let mut shapley = [0.0_f64; D];
 
         for _ in 0..self.permutations {
@@ -270,6 +324,32 @@ mod tests {
         let exp = est.explain(&f, &probe).unwrap();
         let argmax = exp.argmax_abs().expect("non-zero shapley");
         assert_eq!(argmax, 2);
+    }
+
+    #[test]
+    fn explain_with_seed_overrides_stored_seed() {
+        let f = train_forest::<4>();
+        let est = SageEstimator::new([0.0; 4], 32, 11).unwrap();
+        let probe = [0.5_f64, -0.5, 0.25, -0.25];
+        let a = est.explain_with_seed(&f, &probe, 99).unwrap();
+        let b = est.explain_with_seed(&f, &probe, 99).unwrap();
+        // Same explicit seed → bit-identical Shapley vectors.
+        assert_eq!(a.shapley, b.shapley);
+        let c = est.explain_with_seed(&f, &probe, 100).unwrap();
+        // Distinct seeds → distinct Shapley draws (Monte-Carlo
+        // variance). At K=32 the chance of two seeds producing
+        // bit-identical vectors is vanishing.
+        assert_ne!(a.shapley, c.shapley);
+    }
+
+    #[test]
+    fn explain_default_path_matches_explain_with_stored_seed() {
+        let f = train_forest::<4>();
+        let est = SageEstimator::new([0.0; 4], 32, 7).unwrap();
+        let probe = [1.0_f64, 0.0, 0.5, -0.5];
+        let default = est.explain(&f, &probe).unwrap();
+        let explicit = est.explain_with_seed(&f, &probe, 7).unwrap();
+        assert_eq!(default.shapley, explicit.shapley);
     }
 
     #[test]

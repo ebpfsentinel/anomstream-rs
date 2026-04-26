@@ -354,7 +354,7 @@ impl PlattCalibrator {
                 // step-too-large signal and shrink instead.
                 if !new_f.is_finite() || !new_a.is_finite() || !new_b.is_finite() {
                     step_size /= 2.0;
-                    if step_size < config.min_step {
+                    if step_size < config.min_step || step_size.is_subnormal() {
                         converged = true;
                         break;
                     }
@@ -366,7 +366,14 @@ impl PlattCalibrator {
                     break;
                 }
                 step_size /= 2.0;
-                if step_size < config.min_step {
+                // Halving repeatedly drives `step_size` toward
+                // `f64::MIN_POSITIVE` and eventually into subnormals
+                // (~1e-308), where every further halve loses bits
+                // and ULP error explodes. Treat any subnormal step
+                // as "we've shrunk past usefulness" and bail with
+                // the best (a, b) so far — same outcome as hitting
+                // `min_step`, just earlier.
+                if step_size < config.min_step || step_size.is_subnormal() {
                     converged = true;
                     break;
                 }
@@ -515,7 +522,7 @@ mod tests {
 
     #[test]
     fn fit_rejects_non_finite_scores() {
-        let data = vec![(f64::NAN, true), (0.0, false)];
+        let data = alloc::vec![(f64::NAN, true), (0.0, false)];
         assert!(PlattCalibrator::fit(&data, PlattFitConfig::default()).is_err());
     }
 
@@ -569,7 +576,7 @@ mod tests {
     #[test]
     fn calibrate_many_preserves_order() {
         let cal = PlattCalibrator::from_params(-1.0, 0.0);
-        let scores = vec![0.0_f64, 1.0, 2.0, 3.0];
+        let scores = alloc::vec![0.0_f64, 1.0, 2.0, 3.0];
         let out = cal.calibrate_many(&scores);
         assert_eq!(out.len(), 4);
         for &[a, b] in out.array_windows::<2>() {
@@ -619,6 +626,31 @@ mod tests {
         }
         let cal = PlattCalibrator::fit(&data, PlattFitConfig::default()).unwrap();
         assert!(!cal.high_skew());
+    }
+
+    #[test]
+    fn line_search_step_does_not_drift_into_subnormals() {
+        // Pathological data crafted to drag the line-search into
+        // tiny step sizes: 200 near-collinear scores, a few
+        // outliers, and a tight tolerance so Newton stalls early.
+        // The subnormal guard must bail before `step_size` slips
+        // below `f64::MIN_POSITIVE`.
+        let mut data = Vec::new();
+        for _ in 0..200 {
+            data.push((1.0_f64, true));
+        }
+        for _ in 0..200 {
+            data.push((1.0_f64 + 1e-15, false));
+        }
+        let cfg = PlattFitConfig {
+            max_iters: 1_000,
+            tolerance: 1e-30,
+            min_step: 1e-30,
+            sigma: 1e-30,
+        };
+        let cal = PlattCalibrator::fit(&data, cfg).unwrap();
+        assert!(cal.a().is_finite(), "slope must stay finite");
+        assert!(cal.b().is_finite(), "intercept must stay finite");
     }
 
     #[test]

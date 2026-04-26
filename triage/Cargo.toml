@@ -15,7 +15,14 @@ categories = ["algorithms", "science"]
 workspace = true
 
 [features]
-default = ["std", "serde", "postcard"]
+# default: bare-minimum surface so `no_std` consumers don't
+# pay for `std`, `serde`, `rand`-thread-rng, `postcard` they
+# never use. Direct-dep callers who want the historical
+# "everything on" set opt into `default-features = false,
+# features = ["std", "serde", "postcard"]` (or pull in the
+# `anomstream` facade crate, whose default features remain
+# `["core", "std"]`).
+default = []
 std = ["anomstream-core/std", "rand/std", "rand/std_rng", "rand/thread_rng", "rand_chacha/std"]
 serde = ["anomstream-core/serde", "dep:serde", "rand_chacha/serde"]
 serde_json = ["serde", "anomstream-core/serde_json", "dep:serde_json"]
@@ -23,7 +30,7 @@ postcard = ["serde", "anomstream-core/postcard", "dep:postcard"]
 # Tamper-evident audit trail: HMAC-SHA256-chained AlertRecord
 # stream. Pulls `hmac` + `sha2` + `subtle`. Requires `serde +
 # postcard` for canonical record serialisation.
-audit-integrity = ["serde", "postcard", "dep:hmac", "dep:sha2", "dep:subtle"]
+audit-integrity = ["std", "serde", "postcard", "dep:hmac", "dep:sha2", "dep:subtle"]
 
 [dependencies]
 anomstream-core = { workspace = true }
@@ -47,3 +54,23 @@ rand_chacha = { workspace = true, features = ["std"] }
 [[bench]]
 name = "modules"
 harness = false
+
+# Examples carry `required-features` so a `cargo build --examples`
+# under bare default features skips the ones that depend on
+# std-gated modules (feedback, lsh_cluster, sage) instead of
+# failing at compile time.
+[[example]]
+name = "alert_clustering"
+required-features = ["std", "serde", "postcard"]
+
+[[example]]
+name = "audit_trail"
+required-features = ["std", "serde", "postcard", "serde_json"]
+
+[[example]]
+name = "calibrator"
+required-features = ["std"]
+
+[[example]]
+name = "feedback_adjust"
+required-features = ["std"]

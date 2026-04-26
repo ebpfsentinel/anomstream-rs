@@ -301,6 +301,29 @@ impl<const D: usize> FeedbackStore<D> {
     ///
     /// Returns `raw_score` unchanged when the store is empty or
     /// when `probe` contains a non-finite component.
+    ///
+    /// # Cost
+    ///
+    /// **`O(D · L)`** per call where `D` is the per-point
+    /// dimensionality and `L = self.len()` is the live label
+    /// count. The hot loop walks every stored label and computes
+    /// a `D`-element squared distance + one `exp` per label. At
+    /// the [`MAX_CAPACITY`] ceiling (`L = 65 536`) and `D = 64`
+    /// that is roughly 4 × 10⁶ multiply-adds + 65 536 transcendental
+    /// calls per call, ~1 ms on a modern core — fine for SOC
+    /// triage cadence (one call per alert), **not** for hot-path
+    /// per-packet adjustment. High-`D` (`D ≥ 1024`) and
+    /// high-`L` (`L ≥ 16 384`) deployments should either:
+    ///
+    /// - prune the ledger to a tighter [`Self::capacity`], or
+    /// - shard the store per tenant / per detector so each
+    ///   `adjust` walks a smaller `L`, or
+    /// - swap in a spatial index (KD-tree, ball tree) that
+    ///   short-circuits far labels at sub-linear cost.
+    ///
+    /// Profile with `bench_feedback::adjust_hot_512_labels` (and
+    /// the high-`L` variants) before promoting `adjust` to the
+    /// hot path of a high-throughput agent.
     #[must_use = "detector output should be checked — dropping it silently usually indicates a logic bug"]
     pub fn adjust(&self, probe: &[f64; D], raw_score: f64) -> f64 {
         if self.entries.is_empty() || !probe.iter().all(|v| v.is_finite()) {

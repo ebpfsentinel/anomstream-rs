@@ -36,7 +36,7 @@ serde_json = ["anomstream-core?/serde_json"]
 # `hmac` + `sha2` + `subtle` via the triage member. Implies
 # `triage + serde + postcard` because chain entries are
 # canonicalised through postcard before signing.
-audit-integrity = ["triage", "serde", "postcard", "anomstream-triage?/audit-integrity"]
+audit-integrity = ["triage", "std", "serde", "postcard", "anomstream-triage?/audit-integrity"]
 
 [dependencies]
 anomstream-core = { workspace = true, optional = true }
