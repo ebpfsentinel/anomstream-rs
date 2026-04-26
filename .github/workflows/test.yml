@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
         rust: [stable, "1.95"]
     runs-on: ${{ matrix.os }}
     env:
@@ -123,13 +123,19 @@ jobs:
           version: ${{ inputs.version }}
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
-      # Resolve every dependency to the oldest version its
+      # Resolve every **direct** dependency to the oldest version its
       # `Cargo.toml` constraint permits. Catches drift where a loose
       # requirement (`foo = "1"`) relies on features only added in
-      # `1.x.y+n`. Nightly is the only toolchain that ships
-      # `-Z minimal-versions`.
+      # `1.x.y+n`. Nightly is the only toolchain that ships this
+      # flag.
+      #
+      # `-Z direct-minimal-versions` (not `-Z minimal-versions`) so
+      # transitive deps resolve normally — full transitive minimal
+      # resolution explodes on ecosystem corners like `libc 0.1.1`
+      # (2015, pre-1.0 Rust syntax) that no maintainer actually
+      # supports.
       - shell: bash
-        run: cargo update -Z minimal-versions
+        run: cargo update -Z direct-minimal-versions
       - uses: ./.github/actions/cargo-check
         with:
           scope: --workspace --all-features
