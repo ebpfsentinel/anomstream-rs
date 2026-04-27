@@ -14,3 +14,7 @@ scripts/**/*.class
 scripts/**/*.jar
 scripts/**/__pycache__/
 scripts/**/*.pyc
+
+# IA
+CLAUDE.*
+.claude
